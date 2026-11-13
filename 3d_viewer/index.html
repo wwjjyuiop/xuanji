@@ -989,7 +989,90 @@ function _mmdUpdate(delta) {
 }
 
 // 先探测morph名称
-const modelPath = 'models/琳奈.pmx';
+// ─── __xuanji_model_cfg__ 模型路径：URL 参数 ?model= > localStorage > 默认 ───
+const __fname_default = 'models/model.pmx';           // 自备模型放这里
+const __fname_placeholder = 'models/placeholder.glb'; // 仓库自带占位模型（CC-BY-4.0）
+const modelPath = (function () {
+    try {
+        var q = new URLSearchParams(location.search).get('model');
+        if (q) { localStorage.setItem('xuanji_model', q); return q; }
+        var ls = localStorage.getItem('xuanji_model');
+        if (ls) return ls;
+    } catch (e) {}
+    return __fname_default;
+})();
+console.log('[模型] 目标模型: ' + modelPath);
+
+// ─── 模型缺失时的提示与回退 ───
+function __showModelHint(html) {
+    var d = document.getElementById('__xj_model_hint');
+    if (!d) {
+        d = document.createElement('div');
+        d.id = '__xj_model_hint';
+        d.style.cssText = 'position:fixed;left:50%;top:16px;transform:translateX(-50%);' +
+            'background:rgba(20,20,30,.92);color:#ffd9a0;border:1px solid #6b5a8a;' +
+            'border-radius:8px;padding:10px 16px;font:13px/1.6 system-ui;z-index:99999;max-width:80%;';
+        document.body.appendChild(d);
+    }
+    d.innerHTML = html;
+    d.style.display = 'block';
+}
+
+function __importGLTF() {
+    return import('./lib/GLTFLoader.js').then(function (m) { return m.GLTFLoader || m.default; });
+}
+
+function __loadPlaceholder() {
+    __importGLTF().then(function (GLTFLoader) {
+        new GLTFLoader().load(__fname_placeholder, function (gltf) {
+            mesh = gltf.scene;
+            mesh.position.set(0, 0, 0);
+            mesh.rotation.y = 0;   // 占位模型朝向（0=面向镜头，若背对改 Math.PI）
+            scene.add(mesh);
+            __xj_placeholder = true;
+            try { __fitPlaceholder(); } catch (e) { console.warn('[模型] 取景失败', e); }
+            if (gltf.animations && gltf.animations.length) {
+                var mixer = new THREE.AnimationMixer(mesh);
+                // 优先挑“待机/招手”这类安静动作，没有就播第一个
+                var __prefer = ['Idle', 'Standing', 'Wave', 'idle'];
+                var __pick = gltf.animations[0];
+                for (var __n = 0; __n < __prefer.length; __n++) {
+                    var __hit = gltf.animations.find(function (a) { return a.name === __prefer[__n]; });
+                    if (__hit) { __pick = __hit; break; }
+                }
+                console.log('[模型] 播放动作: ' + __pick.name);
+                mixer.clipAction(__pick).play();
+                var clock = new THREE.Clock();
+                (function tick() {
+                    requestAnimationFrame(tick);
+                    mixer.update(clock.getDelta());
+                })();
+            }
+            console.log('[模型] 已加载占位模型: ' + __fname_placeholder);
+        }, undefined, function (err) {
+            console.error('[模型] 占位模型也失败', err);
+            __showModelHint('未找到 3D 模型。请把 .pmx 放到 <code>3d_viewer/models/model.pmx</code>，详见 README。');
+        });
+    }).catch(function (e) {
+        console.error('[模型] GLTFLoader 不可用', e);
+        __showModelHint('未找到 3D 模型。请把 .pmx 放到 <code>3d_viewer/models/model.pmx</code>。');
+    });
+}
+
+var __placeholderTried = false;
+function __onModelError(url) {
+    if (__placeholderTried) return;
+    __placeholderTried = true;
+    console.warn('[模型] 加载失败: ' + url);
+    __showModelHint('没有找到 <code>' + modelPath + '</code>，已切到占位模型。<br>' +
+        '换成自己的模型：把 .pmx 放进 <code>3d_viewer/models/</code>，或用 <code>?model=文件名.pmx</code>。');
+    __loadPlaceholder();
+}
+
+// MMDLoader 内部走 FileLoader，失败会触发 LoadingManager.onError
+loader.manager.onError = function (url) {
+    if (String(url).indexOf('models/') >= 0) { __onModelError(url); }
+};
 
 // ─── 相机适配：按模型实际尺寸取景（全身 / 胸部以上） ───
 function getModelHeight() {
@@ -1026,8 +1109,25 @@ function initArmBones() {
     console.log('[Xuanji3D] 摆臂骨骼:', Object.keys(state.armBones).filter(k => state.armBones[k]).join(', '));
 }
 
+var __xj_placeholder = false;
+
+function __fitPlaceholder() {
+    if (!mesh) return;
+    var box = new THREE.Box3().setFromObject(mesh);
+    var size = box.getSize(new THREE.Vector3());
+    var ctr = box.getCenter(new THREE.Vector3());
+    var h = Math.max(size.y, 0.001);
+    var fov = camera.fov * Math.PI / 180;
+    var dist = (h / 2 / Math.tan(fov / 2)) * 1.55;
+    camera.position.set(ctr.x, ctr.y, ctr.z + dist);
+    controls.target.set(ctr.x, ctr.y, ctr.z);
+    camera.updateProjectionMatrix();
+    controls.update();
+}
+
 function fitCamera(mode) {
     if (!mesh) return;
+    if (__xj_placeholder) { __fitPlaceholder(); return; }   // 占位模型按自身尺寸取景
     const box = new THREE.Box3().setFromObject(mesh);
     const h = box.max.y - box.min.y;
     const cy = (box.max.y + box.min.y) / 2;
@@ -1123,8 +1223,10 @@ loader.load(modelPath, function(result) {
     const pct = Math.round((xhr.loaded / xhr.total) * 100);
     document.getElementById('loading').innerHTML = '<div class="spinner"></div>加载中 ' + pct + '%';
 }, function(err) {
-    document.getElementById('loading').innerHTML = '<div style="color:#ff6666;font-size:13px;">加载失败: ' + err.message + '</div>';
     console.error('PMX Load Error:', err);
+    __onModelError(modelPath);            // 没模型 → 回退占位模型，并给友好提示
+    var _ld = document.getElementById('loading');
+    if (_ld) { _ld.style.display = 'none'; }   // 别让红色报错和转圈挡着
 });
 
 // ─── 设置morph值 ───

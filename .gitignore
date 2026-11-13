@@ -15,7 +15,9 @@ _learning_graph.json
 session_*.txt
 
 # ── 模型与动作素材（版权原因不随仓库分发，自行准备）──
-3d_viewer/models/
+3d_viewer/models/*
+!3d_viewer/models/placeholder.glb
+!3d_viewer/models/PLACEHOLDER_LICENSE.md
 3d_viewer/props/
 live2d_viewer/models/
 *.pmx
