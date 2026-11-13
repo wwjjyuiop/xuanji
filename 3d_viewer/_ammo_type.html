@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body><div id="out">waiting</div>
+<script src="./lib/ammo.wasm.js"></script>
+<script>
+var out = document.getElementById('out');
+window.__p = { lines: [] };
+function s(x){ window.__p.lines.push(x); out.textContent = window.__p.lines.join('\n'); }
+setTimeout(function(){
+  s('typeof Ammo = ' + (typeof Ammo));
+  s('Ammo 是 Promise? = ' + (Ammo instanceof Promise));
+  s('Ammo.ready = ' + (Ammo && Ammo.ready ? '有' : '无'));
+  s('Ammo.btVector3 = ' + (Ammo && typeof Ammo.btVector3!=='undefined'));
+  // 如果Ammo是promise, 尝试 .then
+  if (Ammo instanceof Promise) {
+    s('→ Ammo 是Promise, 等resolve...');
+    Ammo.then(function(m){
+      s('resolve后: btVector3=' + (typeof m!=='undefined' && typeof m.btVector3!=='undefined'));
+      s('resolve后: World=' + (m && typeof m.btDiscreteDynamicsWorld!=='undefined'));
+    }).catch(function(e){ s('resolve ERR ' + e.message); });
+  }
+}, 300);
+</script>
+</body></html>

@@ -1,0 +1,40 @@
+# ── 密钥与凭据（绝不提交）──
+.env
+*.env
+*.pem
+*.key
+
+# ── 运行时数据与私人记忆 ──
+*.db
+*.db-shm
+*.db-wal
+_对话记忆.json
+记忆库.json
+_cron_jobs.json
+_learning_graph.json
+session_*.txt
+
+# ── 模型与动作素材（版权原因不随仓库分发，自行准备）──
+3d_viewer/models/
+3d_viewer/props/
+live2d_viewer/models/
+*.pmx
+*.pmd
+*.vrm
+*.vmd
+*.moc3
+*.zip
+
+# ── 产物与缓存 ──
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.bak*
+_backup*/
+.bak/
+
+# ── 编辑器 ──
+.vscode/
+.idea/
+.DS_Store

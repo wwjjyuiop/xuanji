@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>玄机 Live2D 形象</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0d0a1a; }
+#loading {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: rgba(255,255,255,0.4); font-family: 'Microsoft YaHei', sans-serif;
+    font-size: 14px; text-align: center; z-index: 10;
+}
+#loading .spinner {
+    width: 24px; height: 24px; margin: 0 auto 8px;
+    border: 2px solid rgba(255,255,255,0.1);
+    border-top: 2px solid rgba(180,100,255,0.5);
+    border-radius: 50%; animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#name-label {
+    position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+    color: rgba(200,180,255,0.5); font-family: 'Microsoft YaHei', sans-serif;
+    font-size: 11px; letter-spacing: 3px; user-select: none;
+    text-shadow: 0 0 10px rgba(100,80,200,0.3);
+    z-index: 5;
+}
+#error-msg {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #ff6666; font-family: 'Microsoft YaHei', sans-serif;
+    font-size: 13px; text-align: center; line-height: 2; z-index: 10;
+    max-width: 90%;
+}
+</style>
+</head>
+<body>
+<div id="loading"><div class="spinner"></div>加载形象中...</div>
+<div id="error-msg" style="display:none;"></div>
+<div id="dbg-info" style="display:none;"></div>
+
+<script src="./lib/live2dcubismcore.min.js"></script>
+<script src="./lib/pixi.min.js"></script>
+<script src="./lib/pixi-live2d-display.min.js"></script>
+
+<script>
+// ─── 状态 ───
+const state = {
+    speaking: false,
+    emotion: 'calm',
+    model: null,
+    motionIdx: 0,
+    mouthTarget: 0,   // 嘴部目标开合度（0=闭 1=最大）
+    mouthCurrent: 0,  // 嘴部当前开合度（平滑过渡用）
+    mouthTimer: null, // 说话时随机张合的定时器
+};
+
+// 模型列表（未来可切换，目录在 ./models/ 下）
+const MODELS = [
+    { name: 'Natori', path: './models/Natori/Natori.model3.json', label: '官方示例 Natori' },
+];
+
+// ─── 初始化 ───
+async function init() {
+    const loading = document.getElementById('loading');
+    const errorMsg = document.getElementById('error-msg');
+
+    try {
+        // 检查全局
+        if (typeof Live2DCubismCore === 'undefined') {
+            throw new Error('Live2D Cubism Core 未加载');
+        }
+        if (typeof PIXI === 'undefined') {
+            throw new Error('PIXI 未加载');
+        }
+        if (typeof PIXI.live2d === 'undefined') {
+            throw new Error('pixi-live2d-display 未加载');
+        }
+
+        console.log('[Live2D] 库版本检查通过');
+        console.log('[Live2D] Core:', typeof Live2DCubismCore !== 'undefined' ? 'OK' : 'MISSING');
+
+        // 创建应用
+        const app = new PIXI.Application({
+            view: document.createElement('canvas'),
+            autoStart: true,
+            resizeTo: window,
+            backgroundAlpha: 0,
+            antialias: true,
+            resolution: Math.min(window.devicePixelRatio || 1, 2),
+        });
+        document.body.insertBefore(app.view, document.body.firstChild);
+        app.view.style.position = 'absolute';
+        app.view.style.top = '0';
+        app.view.style.left = '0';
+        app.view.style.width = '100%';
+        app.view.style.height = '100%';
+
+        // 加载模型
+        const model = await PIXI.live2d.Live2DModel.from(MODELS[0].path, { autoInteract: true });
+        state.model = model;
+        window.__l2dModel = model;   // 调试钩子
+        window.__l2dState = state;   // 调试钩子
+
+        // 等模型布局就绪后缓存原始尺寸
+        await new Promise(r => setTimeout(r, 300));
+        // 用 internalModel 的 canvas 像素尺寸计算宽高比（更可靠）
+        const im = model.internalModel;
+        if (im && (im.originalWidth || im.originalHeight)) {
+            const iw = im.originalWidth || im.width;
+            const ih = im.originalHeight || im.height;
+            state.origW = iw;
+            state.origH = ih;
+        } else if (model.width && model.height) {
+            state.origW = model.width;
+            state.origH = model.height;
+        }
+        console.log('[Live2D] 原始尺寸:', state.origW, 'x', state.origH);
+
+        // 锚点恒为中心（fitModel 内显式计算位置）
+        model.anchor.set(0.5, 0.5);
+        app.stage.addChild(model);
+
+        // 动态适配：默认全身完整显示
+        fitModel();
+
+        // 自动呼吸/摇摆动画（只在基准位置浮动，不覆盖 fitModel 的位置）
+        app.ticker.add(() => {
+            if (!model) return;
+            const t = performance.now() / 1000;
+            model.position.y = state.baseY + Math.sin(t * 1.2) * 3;
+        });
+
+        // 嘴部动画（说话时随机张合，不说话时归零）——直接在 ticker 内驱动，
+        // 不依赖 setInterval（QWebEngineView 中定时器会被节流不可靠）
+        state._nextMouthChange = 0;
+        app.ticker.add(() => {
+            if (!model || !model.internalModel) return;
+            try {
+                const core = model.internalModel.coreModel || model.internalModel;
+                if (!core || !core.setParameterValueById) return;
+                const now = performance.now();
+                if (state.speaking) {
+                    // 说话：每 ~80ms 随机一次嘴部目标（0.45~1.0，张合明显）
+                    if (!state._nextMouthChange || now > state._nextMouthChange) {
+                        state.mouthTarget = 0.45 + Math.random() * 0.55;
+                        state._nextMouthChange = now + 80;
+                    }
+                } else {
+                    state.mouthTarget = 0;
+                }
+                // 平滑过渡，避免嘴部突变
+                state.mouthCurrent = state.mouthCurrent * 0.55 + state.mouthTarget * 0.45;
+                core.setParameterValueById('ParamMouthOpenY', state.mouthCurrent);
+                core.setParameterValueById('ParamMouthForm', state.mouthCurrent * 0.4);
+            } catch (e) {}
+        });
+
+        loading.style.display = 'none';
+        console.log('[Live2D] 模型加载成功');
+        console.log('[Live2D-DEBUG] originalWidth=' + (im && im.originalWidth) + ' originalHeight=' + (im && im.originalHeight) + ' model.width=' + model.width + ' model.height=' + model.height + ' scale=' + model.scale.x);
+        var _dbg = document.getElementById('dbg-info');
+        if (_dbg) {
+            _dbg.textContent = JSON.stringify({
+                origW: im ? im.originalWidth : null,
+                origH: im ? im.originalHeight : null,
+                mw: model.width, mh: model.height, scale: model.scale.x,
+                vm: state.viewMode, cw: window.innerWidth, ch: window.innerHeight
+            });
+        }
+
+        // 不自动轮播待机动作——不说话时形象保持静止（只留眨眼/呼吸），
+        // 说话时由 setSpeaking 驱动嘴部张合。
+
+    } catch (e) {
+        console.error('[Live2D] 初始化失败:', e);
+        loading.style.display = 'none';
+        errorMsg.style.display = 'block';
+        errorMsg.innerHTML = '加载失败: ' + e.message;
+    }
+}
+
+// 待机动作轮播（已停用：不说话的时侯保持静止，避免一直乱动）
+function startIdleMotion() {
+    if (!state.model || !state.model.internalModel || !state.model.internalModel.motionManager) return;
+    const mm = state.model.internalModel.motionManager;
+    // 尝试播放 Idle 组动作
+    try {
+        state.model.motion('Idle', state.motionIdx);
+        state.motionIdx = (state.motionIdx + 1) % 6;
+    } catch (e) {
+        console.log('[Live2D] 动作播放跳过:', e.message);
+    }
+    setTimeout(startIdleMotion, 12000);
+}
+
+// ─── 动态适配：全身 / 胸部以上特写 ───
+// viewMode: 'full' 全身完整显示; 'bust' 胸部以上放大显示
+state.viewMode = 'full';
+state.origW = 2400;  // 模型原始像素宽（加载后由 internalModel 更新）
+state.origH = 4500;  // 模型原始像素高
+state.baseY = 0;   // ticker 浮动基准位置
+
+function fitModel() {
+    if (!state.model) return;
+    const model = state.model;
+    const cw = window.innerWidth;
+    const ch = window.innerHeight;
+    // 锚点恒为中心，位置用公式显式计算
+    model.anchor.set(0.5, 0.5);
+
+    // 模型原始像素尺寸（scale=1 时即原始大小）
+    const baseW = state.origW || 2400;
+    const baseH = state.origH || 4500;
+
+    if (state.viewMode === 'bust') {
+        // 胸部以上特写：显示「头顶→胸部」段，放大铺满容器
+        // Haru 画布：头发顶部≈2%处，胸部约在 42% 处（topFrac 调低防头发被裁）
+        const topFrac = 0.02;      // 头发顶在模型画布的高度比例（从顶部算）
+        const chestFrac = 0.42;    // 胸部位置
+        const segH = baseH * (chestFrac - topFrac);   // 头→胸 段的原始像素高
+        const targetH = ch * 0.92;
+        let s = targetH / segH;
+        // bust 不限制宽度（头部只占画布小部分，用整画布限宽会严重缩水）
+        // 模型顶部 = py - baseH*s/2；头顶位置 = 顶部 + topFrac*baseH*s = margin
+        const margin = 12;
+        const py = margin + baseH * s * (0.5 - topFrac);
+        model.scale.set(s, s);
+        model.position.set(cw / 2, py);
+        state.baseY = py;
+    } else {
+        // 全身：高度铺满容器 95%（宽度允许溢出 30%，立绘主体居中不受影响）
+        const targetH = ch * 0.95;
+        let s = targetH / baseH;
+        if (baseW * s > cw * 1.3) s = (cw * 1.3) / baseW;
+        model.scale.set(s, s);
+        // 脚底贴容器底部：模型底部 = position.y + baseH*s/2 = ch
+        const py = ch - baseH * s / 2;
+        model.position.set(cw / 2, py);
+        state.baseY = py;
+    }
+}
+
+// ─── 窗口自适应 ───
+window.addEventListener('resize', function() {
+    fitModel();
+});
+
+// ═══════════════════════════════════════════════
+//  Python → JS 通信接口
+//  由 QWebEngineView.page().runJavaScript() 调用
+// ═══════════════════════════════════════════════
+window.__xuanjiLive2d = {
+    setSpeaking: function(speaking) {
+        // 只置标志，嘴部张合由 PIXI ticker 驱动（setInterval 在 webview 中不可靠）
+        state.speaking = speaking;
+        if (!speaking) {
+            state.mouthTarget = 0;
+        }
+    },
+    setEmotion: function(emotion) {
+        state.emotion = emotion;
+        try {
+            if (state.model && state.model.internalModel) {
+                // 尝试表情切换（若模型带表情）
+                const expressions = state.model.internalModel.expressionManager;
+                if (expressions) {
+                    const names = Object.keys(expressions.getExpressionNames ? expressions.getExpressionNames() : {});
+                    const map = { happy: 'Smile', sad: 'Sad', surprise: 'Surprised', love: 'Blushing', question: 'Normal', calm: 'Normal' };
+                    const target = map[emotion] || 'Normal';
+                    if (names.includes(target)) {
+                        state.model.expression(target);
+                    }
+                }
+            }
+        } catch (e) {}
+    },
+    setModel: function(index) {
+        // 切换模型（预留）
+        return 'not-implemented';
+    },
+    setViewMode: function(mode) {
+        // 'full' 全身 / 'bust' 胸部以上特写
+        if (mode === 'full' || mode === 'bust') {
+            state.viewMode = mode;
+            fitModel();
+        }
+    },
+};
+
+console.log('[Live2D] 就绪，等待Python连接');
+init();
+</script>
+</body>
+</html>

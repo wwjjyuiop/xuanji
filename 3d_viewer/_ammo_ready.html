@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>ammo ready probe</title></head>
+<body>
+<div id="out">waiting...</div>
+<script src="./lib/ammo.wasm.js"></script>
+<script>
+var out = document.getElementById('out');
+function show(s){ out.textContent = (out.textContent==='waiting...'?'':out.textContent+'\n') + s; }
+// 记时间戳
+show('Ammo fn=' + (typeof Ammo));
+if (typeof Ammo !== 'undefined' && Ammo.ready) {
+  show('ready=promise, 等待resolve...');
+  Ammo.ready.then(function(){
+    show('after-ready: btVector3=' + (typeof Ammo.btVector3!=='undefined')
+       + ' btDiscreteDynamicsWorld=' + (typeof Ammo.btDiscreteDynamicsWorld!=='undefined'));
+  }).catch(function(e){ show('ready ERR '+e); });
+} else {
+  show('no Ammo.ready');
+}
+// 轮询也看
+setInterval(function(){
+  if (typeof Ammo!=='undefined' && typeof Ammo.btVector3!=='undefined') {
+    show('POLL: btVector3 已就绪');
+    clearInterval(this);
+  }
+}, 800);
+</script>
+</body>
+</html>

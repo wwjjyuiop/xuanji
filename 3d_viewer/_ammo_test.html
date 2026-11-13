@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>ammo test</title>
+<style>body{background:#111;color:#0f0;font:14px monospace;padding:20px}</style>
+</head>
+<body>
+<h3>Ammo 静态引入探测</h3>
+<div id="out">loading...</div>
+<script>
+function log(s){ var d=document.getElementById('out'); d.textContent += s + "\n"; }
+</script>
+<!-- 玄机现在静态引入 ammo 用的是 ./lib/ammo.wasm.js -->
+<script src="./lib/ammo.wasm.js"></script>
+<script>
+// 等 ammo.wasm.js 同步加载完(它是同步var Ammo), 立即检查
+setTimeout(function(){
+  log("Ammo 类型: " + (typeof Ammo));
+  log("Ammo 有没有 btDiscreteDynamicsWorld: " + (typeof Ammo !== 'undefined' && typeof Ammo.btDiscreteDynamicsWorld !== 'undefined'));
+  log("Ammo 有没有 btVector3: " + (typeof Ammo !== 'undefined' && typeof Ammo.btVector3 !== 'undefined'));
+}, 300);
+</script>
+</body>
+</html>

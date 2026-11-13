@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body>
+<div id="log">wait</div>
+<script>
+// 加载玄机自己的 3D 页面(它自带 __xuanji3d 接口)
+</script>
+<iframe id="f" src="index.html" style="width:500px;height:700px;border:0"></iframe>
+<script>
+var L=document.getElementById('log');
+function s(t){ L.textContent+=t+"\n"; }
+// 通过 iframe 调玄机页面的 __xuanji3d, 触发动作
+s('等待 iframe 加载玄机3D...');
+setTimeout(function(){
+  var f=document.getElementById('f').contentWindow;
+  s('检查 __xuanji3d: '+(f.__xuanji3d?'存在':'无'));
+  try{
+    // 模型就绪后触发 nature 舞
+    var tries=0;
+    var iv=setInterval(function(){
+      tries++;
+      if(f.__xuanji3d){
+        try{
+          var r=f.__xuanji3d.playAction('nature');
+          s('触发 nature 舞 -> '+r);
+          clearInterval(iv);
+        }catch(e){ s('触发异常 '+e.message); clearInterval(iv); }
+      } else if(tries>30){ s('30次未就绪'); clearInterval(iv); }
+    },500);
+  }catch(e){ s('外部触发失败 '+e.message); }
+},3000);
+// 触发几个动作展示
+setTimeout(function(){
+  var w=document.getElementById('f').contentWindow;
+  s('尝试: chip/resonant/standup/wave');
+  ['chip','resonant','standup','wave'].forEach(function(a){
+    try{ s(a+' -> '+(w.__xuanji3d?w.__xuanji3d.playAction(a):'no-api')); }catch(e){ s(a+' err '+e.message); }
+  });
+},8000);
+</script>
+</body></html>

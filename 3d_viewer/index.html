@@ -1,0 +1,1637 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>玄机 3D 形象</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+#loading {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: rgba(255,255,255,0.4); font-family: 'Microsoft YaHei', sans-serif;
+    font-size: 14px; text-align: center; z-index: 10;
+}
+#loading .spinner {
+    width: 24px; height: 24px; margin: 0 auto 8px;
+    border: 2px solid rgba(255,255,255,0.1);
+    border-top: 2px solid rgba(180,100,255,0.5);
+    border-radius: 50%; animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#name-label {
+    position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+    color: rgba(200,180,255,0.5); font-family: 'Microsoft YaHei', sans-serif;
+    font-size: 11px; letter-spacing: 3px; user-select: none;
+    text-shadow: 0 0 10px rgba(100,80,200,0.3);
+    z-index: 5;
+}
+</style>
+</head>
+<body>
+<div id="loading"><div class="spinner"></div>加载形象中...</div>
+<div id="name-label">玄 机</div>
+
+<script src="./lib/ammo.wasm.js"></script>
+
+<script type="importmap">
+{
+    "imports": {
+        "three": "./lib/three.module.min.js",
+        "three/addons/controls/OrbitControls.js": "./lib/OrbitControls.js",
+        "three/addons/loaders/MMDLoader.js": "./lib/MMDLoader.js",
+        "three/addons/animation/MMDAnimationHelper.js": "./lib/MMDAnimationHelper.js"
+    }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
+import { MMDAnimationHelper } from 'three/addons/animation/MMDAnimationHelper.js';
+
+// ─── 状态 ───
+const state = {
+    speaking: false,
+    emotion: 'calm',
+    blinkTimer: 0,
+    nextBlink: 3 + Math.random() * 2,
+    mouthOpen: 0,
+    mouthTarget: 0,
+    mouthVowel: 0,
+    _nextMouthChange: 0,
+    smileAmount: 0.15,
+    debugTime: null,   // 调试用：固定动画时间点
+};
+
+// ─── 场景 ───
+const scene = new THREE.Scene();
+scene.background = null; // 透明渲染表面（alpha:true），背景采用场景内元素绘制
+
+// ═══ 科技感背景：深邃宇宙漩涡 + 黑洞核心 + 旋转吸积环 + 环形星尘流（“往后缩”的纵深感） ═══
+// 1) 天空球：以画面中心为漩涡核心，中心深黑 → 边缘墨蓝青螺旋卷曲，视觉上“往中心缩进去”
+const bgVert = `
+  varying vec2 vUv;
+  void main(){
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+  }`;
+const bgFrag = `
+  varying vec2 vUv;
+  uniform float uT;
+  void main(){
+    // 以屏幕中心为漩涡核心点(略偏下，配合形象站位)
+    vec2 c = vUv - vec2(0.5, 0.42);
+    float r = length(c);
+    float ang = atan(c.y, c.x);
+    // 黑洞核心：中心极深黑，往外逐渐显露出暗色宇宙底色
+    float core = smoothstep(0.0, 0.22, r);
+    // 漩涡螺旋卷曲：角度加上随半径变化的螺旋偏移，产生“向里旋缩”
+    float swirl = ang + r * 9.0 + uT * 0.18;
+    // 暗色宇宙底色：中心黑 → 外缘墨蓝青（径向渐变）
+    vec3 deep = vec3(0.004, 0.006, 0.012);
+    vec3 rim  = vec3(0.015, 0.045, 0.10);
+    vec3 col = mix(deep, rim, smoothstep(0.0, 0.9, r));
+    // 螺旋暗纹（围绕中心旋转的微微明暗带）
+    float spiral = 0.5 + 0.5 * sin(swirl * 3.0);
+    col *= (0.92 + 0.14 * spiral * core);
+    // 漩涡方向的极淡星云色相微差（青紫交织）
+    col += vec3(0.012, 0.018, 0.030) * smoothstep(0.1, 0.8, r) * (0.5 + 0.5*sin(swirl*2.0 + 1.7));
+    // 底部极淡金色暖光（衬托形象脚下）
+    float y = vUv.y;
+    col += vec3(0.09, 0.06, 0.01) * pow(1.0 - y, 2.5) * 0.5 * smoothstep(0.45, 0.9, r);
+    // 四周径向暗角（聚焦中心黑洞）
+    col *= (1.0 - 0.45 * smoothstep(0.55, 1.05, r));
+    gl_FragColor = vec4(col, 1.0);
+  }`;
+const skyGeo = new THREE.SphereGeometry(90, 48, 32);
+const skyMat = new THREE.ShaderMaterial({
+    vertexShader: bgVert, fragmentShader: bgFrag,
+    side: THREE.BackSide, depthWrite: false,
+    uniforms: { uT: { value: 0.0 } },
+});
+const sky = new THREE.Mesh(skyGeo, skyMat);
+scene.add(sky);
+
+// 2) 大暗色发光网格地面（透视科技感，青色微光）
+const gridHelper = new THREE.GridHelper(140, 36, 0x00b8d4, 0x005a70);
+gridHelper.material.transparent = true;
+gridHelper.material.opacity = 0.28;
+gridHelper.position.y = -7.5;
+scene.add(gridHelper);
+
+// 3) 大圆盘上的行星粒子：大的亮点绕盘旋转，各自随机亮-灭闪烁（不一片黑）
+const starCount = 520;
+// 盘面倾斜角(弧度)：斜立大圆盘，从形象脚边向后上方延伸成弧面
+const DISK_TILT = -1.10;   // 约-63°
+// 盘心位置：大圆盘中心在形象前方偏下(圆盘前沿抵到形象脚边)，盘面向后上方铺开
+const BLACK_HOLE = { x: 0, y: -2.5, z: -11 };  // 盘心(后移，让形象站在紫色环边缘)
+const starPos = new Float32Array(starCount * 3);
+const starCol = new Float32Array(starCount * 3);
+const starSz = new Float32Array(starCount);
+const starOrbit = new Float32Array(starCount);  // 轨道半径
+const starAng  = new Float32Array(starCount);
+const starPhase = new Float32Array(starCount);  // 每颗粒子的闪烁随机相位
+const starFreq = new Float32Array(starCount);   // 每颗粒子的独立随机闪烁速度
+for (let i = 0; i < starCount; i++) {
+    // 随机分布在大圆盘面上（半径范围大，形成宽阔盘面）
+    const rr = 4 + Math.pow(Math.random(), 0.6) * 30;   // 偏内多、外缘也有分布
+    const aa = Math.random() * Math.PI * 2;
+    starOrbit[i] = rr;
+    starAng[i]   = aa;
+    starPhase[i] = Math.random() * Math.PI * 2;   // 独立闪烁相位
+    starFreq[i]  = 0.4 + Math.random() * 1.8;     // 独立随机闪烁速度(颗粒各不相同)
+    // 盘面局部坐标
+    const lx = Math.cos(aa) * rr;
+    const ly = (Math.random() - 0.5) * 1.8;      // 盘面厚度
+    const lz = Math.sin(aa) * rr;
+    // 绕X轴倾斜 → 立体盘面
+    const sT = Math.sin(DISK_TILT), cT = Math.cos(DISK_TILT);
+    starPos[i*3]   = BLACK_HOLE.x + lx;
+    starPos[i*3+1] = BLACK_HOLE.y + ly * cT - lz * sT;
+    starPos[i*3+2] = BLACK_HOLE.z + ly * sT + lz * cT;
+    let gold = (Math.random() < 0.30) ? 1 : 0;   // 更多金色点缀
+    starCol[i*3]   = gold ? 1.0 : 0.50;
+    starCol[i*3+1] = gold ? 0.85 : 0.95;
+    starCol[i*3+2] = gold ? 0.35 : 1.0;
+    starSz[i]      = 0.4 + Math.random() * 0.7;   // 细粒子(与前面版本一致)
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+starGeo.setAttribute('color', new THREE.BufferAttribute(starCol, 3));
+starGeo.setAttribute('size', new THREE.BufferAttribute(starSz, 1));
+const starMat = new THREE.PointsMaterial({
+    size: 0.55, vertexColors: true, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
+});
+const stars = new THREE.Points(starGeo, starMat);
+scene.add(stars);
+
+// 4) 大吸积圆盘：盘心在形象脚边前方，盘面扩大并向形象身后上方铺开（形象站在盘的前沿边缘）
+// 4a) 盘面核心（代替原黑洞暗心，作为盘的中心发光区）
+const coreMat = new THREE.MeshBasicMaterial({
+    color: 0x000000, transparent: true, opacity: 0.0,   // 最终动画里调
+    side: THREE.DoubleSide,
+});
+const coreCircle = new THREE.Mesh(new THREE.CircleGeometry(4.6, 48), coreMat);
+coreCircle.position.set(BLACK_HOLE.x, BLACK_HOLE.y, BLACK_HOLE.z);
+scene.add(coreCircle);
+// 4b) 大吸积圆盘（倾斜立起的多层发光盘，半径扩大覆盖形象脚下并向后上方铺开）
+function makeAccretion(innerR, outerR, hexColor, opacity, segments) {
+    const ringGeo = new THREE.RingGeometry(innerR, outerR, segments);
+    const ringMat = new THREE.MeshBasicMaterial({
+        color: hexColor, transparent: true, opacity: opacity,
+        side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = DISK_TILT;   // 倾斜立起，盘面向后上方延伸
+    ring.position.set(BLACK_HOLE.x, BLACK_HOLE.y, BLACK_HOLE.z);
+    scene.add(ring);
+    return ring;
+}
+// 大圆盘：金内沿 + 蓝紫中环 + 蓝紫外晕 —— 覆盖形象脚下到身后的宽阔盘面
+const accretionGold = makeAccretion(7.0, 8.5, 0xffc46b, 0.32, 72);    // 金色内沿(最亮)
+const accretionPurple = makeAccretion(8.4, 15.0, 0x7a5cff, 0.22, 84);  // 蓝紫中环(大)
+const accretionBlue = makeAccretion(13.0, 26.0, 0x2f6bff, 0.14, 96);    // 蓝紫外晕(超大圆盘)
+
+// 5) 脚下金色光环（衬托立绘）
+const footRing = new THREE.Mesh(
+    new THREE.RingGeometry(5.2, 6.0, 48),
+    new THREE.MeshBasicMaterial({ color: 0xffc107, transparent: true, opacity: 0.55, side: THREE.DoubleSide })
+);
+footRing.rotation.x = -Math.PI / 2;
+footRing.position.y = -7.0;
+scene.add(footRing);
+
+// ═══ 科技感背景结束 ═══
+
+// ─── 相机 ───
+const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 1, 200);
+camera.position.set(0, 18, 28);
+
+// ─── 渲染器 ───
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+// ─── 控制器（轻交互，不自转） ───
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = false;
+controls.target.set(0, 10, 0);
+controls.minDistance = 2;
+controls.maxDistance = 200;
+controls.maxPolarAngle = Math.PI / 2.1;
+controls.enablePan = false;
+
+// ─── 灯光 ───
+const ambient = new THREE.AmbientLight(0x404060, 0.4);
+scene.add(ambient);
+
+// 主光
+const keyLight = new THREE.DirectionalLight(0xffeedd, 1.6);
+keyLight.position.set(-10, 18, 12);
+keyLight.castShadow = true;
+scene.add(keyLight);
+
+// 辅光（暖）
+const fillLight = new THREE.DirectionalLight(0xffaa88, 0.5);
+fillLight.position.set(8, 4, -8);
+scene.add(fillLight);
+
+// 背光（冷轮廓）
+const rimLight = new THREE.DirectionalLight(0x6688ff, 0.7);
+rimLight.position.set(0, 8, -18);
+scene.add(rimLight);
+
+// 底部补光
+const bottomLight = new THREE.DirectionalLight(0x8866ff, 0.25);
+bottomLight.position.set(0, -10, 0);
+scene.add(bottomLight);
+
+// 氛围点光
+const pointLight = new THREE.PointLight(0x9966ff, 0.4, 30);
+pointLight.position.set(4, 6, 4);
+scene.add(pointLight);
+
+// ─── 地面光晕 ───
+const glowCircle = new THREE.Mesh(
+    new THREE.CircleGeometry(7, 32),
+    new THREE.MeshBasicMaterial({
+        color: 0x6644aa, transparent: true, opacity: 0.06, side: THREE.DoubleSide,
+    })
+);
+glowCircle.rotation.x = -Math.PI / 2;
+glowCircle.position.y = 0.01;
+scene.add(glowCircle);
+
+// ─── 花瓣粒子系统 ───
+const petalCount = 30;
+const petalGeo = new THREE.BufferGeometry();
+const positions = new Float32Array(petalCount * 3);
+const sizes = new Float32Array(petalCount);
+const velocities = [];
+for (let i = 0; i < petalCount; i++) {
+    positions[i * 3] = (Math.random() - 0.5) * 30;
+    positions[i * 3 + 1] = Math.random() * 40 - 5;
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 20 - 5;
+    sizes[i] = 2 + Math.random() * 4;
+    velocities.push({
+        vy: 0.3 + Math.random() * 0.6,
+        vx: (Math.random() - 0.5) * 0.3,
+        vz: (Math.random() - 0.5) * 0.2,
+    });
+}
+petalGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+petalGeo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+// 花瓣贴图（简单椭圆）
+const petalCanvas = document.createElement('canvas');
+petalCanvas.width = 16;
+petalCanvas.height = 8;
+const ctx = petalCanvas.getContext('2d');
+ctx.fillStyle = 'rgba(255,200,210,0.6)';
+ctx.beginPath();
+ctx.ellipse(8, 4, 7, 3, 0, 0, Math.PI * 2);
+ctx.fill();
+const petalTexture = new THREE.CanvasTexture(petalCanvas);
+
+const petals = new THREE.Points(
+    petalGeo,
+    new THREE.PointsMaterial({
+        color: 0xffc8d4, size: 4, map: petalTexture,
+        transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
+        depthWrite: false, sizeAttenuation: true,
+    })
+);
+scene.add(petals);
+
+// ─── 加载PMX ───
+const loader = new MMDLoader();
+let mesh = null;
+let _allBoneInit = null;   // 全身骨骼初始姿态快照（2026-09-21：停止动作时整体复位用）
+const morphMap = {};
+const clock = new THREE.Clock();
+
+// ─── MMD 动作播放（方案A）：Ammo 物理 + AnimationHelper 
+let _mmdHelper = null;
+let _mmdReady = false;
+// 🔴 2026-09-21：VMD 录像动作映射表已整体拆除（作者指令：去掉 vox 动作，只做数字人）
+const _mmdActionLib = {};
+
+function _buildHelper() {
+    try {
+        _mmdHelper = new MMDAnimationHelper({ audio: false, physics: false });
+        // 🔴 IK 关闭：这些动作带 IK 骨骼(如左足D/右足D)，播放时必须禁用 helper 的 IK 求解器，
+        //    否则 IK 会和 .vmd 动作关键帧打架 → 腿部/手臂抽搐、穿模（2026-08-29 作者提醒"别忘关IK"）
+        if (_mmdHelper.enabled) {
+            _mmdHelper.enabled.ik = false;
+            _mmdHelper.enabled.grant = false;
+            console.log('[MMD] IK/Grant 已关闭（匹配动作直接播放）');
+        }
+        return true;
+    } catch (e) { console.error('[MMD] helper初始化失败:', e); return false; }
+}
+
+function _ammoBtReady() {
+    // Ammo 就绪的标志: bt 物理类已挂载(不同版本触发时机不同, 统一用bt类存在判断)
+    return typeof Ammo !== 'undefined' &&
+           (typeof Ammo.btVector3 !== 'undefined' ||
+            (Ammo.btDiscreteDynamicsWorld !== undefined));
+}
+
+function _initMMDPhysics(cb) {
+    if (_mmdReady) { if (cb) cb(); return; }
+    var settle = function() {
+        _mmdReady = true;
+        _buildHelper();
+        if (cb) cb();
+    };
+    // 情况1: Ammo 已就绪(bt类已挂载) → 直接建 helper
+    if (_ammoBtReady()) { settle(); return; }
+    // 情况2: Ammo 存在但可能异步初始化(promise-ready 或 onRuntimeInitialized)
+    if (typeof Ammo !== 'undefined') {
+        var waited = false;
+        var attempt = function() {
+            if (_ammoBtReady()) { if (!_mmdReady) settle(); return; }
+            if (!waited) { waited = true; setTimeout(attempt, 300); return; }
+            console.warn('[MMD] Ammo异步初始化未完成, 跳过动作(模型不受影响)');
+            if (!_mmdReady) { _mmdReady = true; if (cb) cb(); }
+        };
+        // 若提供 onRuntimeInitialized 就挂回调, 再轮询兜底
+        if (typeof Ammo.onRuntimeInitialized === 'function') {
+            var orig = Ammo.onRuntimeInitialized;
+            Ammo.onRuntimeInitialized = function() { try { orig && orig(); } catch(e){} attempt(); };
+        }
+        setTimeout(attempt, 200);
+        return;
+    }
+    // 情况3: Ammo 未定义 → 动态加载
+    const s = document.createElement('script');
+    s.src = './lib/ammo.wasm.js';
+    s.onload = function() {
+        setTimeout(function() {
+            if (_ammoBtReady()) { settle(); return; }
+            console.warn('[MMD] ammo加载后bt未就绪, 跳过动作');
+            if (!_mmdReady) { _mmdReady = true; if (cb) cb(); }
+        }, 500);
+    };
+    s.onerror = function() { console.error('[MMD] ammo加载失败(动作不可用,模型不影响)'); if (cb) cb(); };
+    document.head.appendChild(s);
+}
+
+function _mmdAddMesh() {
+    if (!_mmdHelper || !mesh) return;
+    try { _mmdHelper.add(mesh, { physics: false }); } catch (e) { console.error('[MMD] add失败:', e); }
+}
+
+// ─── 方案B：代码驱动骨骼动作（不依赖外部 vmd 文件） ───
+// 多名称查找：MMD 模型骨骼命名可能有日/中/英几种，逐个试
+// ═══ 2026-09-21 数字人第一阶段：补全骨骼别名表（原表只有 head/spine/center，这是"腿不动"的根因）═══
+// 左/右各一套；候选按优先顺序匹配。骨骼名来自 models/琳奈.pmx 实测（共 235 根）。
+//
+// ⚠️ 为什么腿部的别名必须指向带 D 后缀的变形骨骼（左足D / 左ひざD / 左足首D），而不是不带 D 的同名骨骼：
+//   腿部蒙皮的 skinIndex 实测绑定在带 D 的骨骼上（索引 404–411）；改成不带 D 的同名骨骼，
+//   会出现「骨骼读数在变、画面纹丝不动」——因为皮根本不听那根骨头。
+const _BONE_ALIASES = {
+    root:      ['全ての親', '操作中心', 'root'],
+    center:    ['センター', 'center', 'Center'],
+    center2:   ['センター2'],
+    groove:    ['グルーブ', 'groove'],
+    hips:      ['下半身', 'hips'],
+    spine:     ['上半身', 'spine', 'Spine'],
+    spine2:    ['上半身2', '上半身1'],
+    chest:     ['上半身2', 'chest'],
+    neck:      ['首', 'neck', 'Neck'],
+    head:      ['頭', '头', 'head', 'Head', '首'],
+    shoulderL: ['左肩', 'shoulderL'],
+    shoulderR: ['右肩', 'shoulderR'],
+    upperArmL: ['左腕', 'upperArmL'],
+    upperArmR: ['右腕', 'upperArmR'],
+    elbowL:    ['左ひじ', 'elbowL'],
+    elbowR:    ['右ひじ', 'elbowR'],
+    wristL:    ['左手首', 'wristL'],
+    wristR:    ['右手首', 'wristR'],
+    handL:     ['左手先', '左ダミー', 'handL'],
+    handR:     ['右手先', '右ダミー', 'handR'],
+    // 🔴 2026-09-21：腿部蒙皮绑在 D 变形骨骼上（运行时 skinIndex 实测权重：
+    //    右足D=1923/左足首D=1882/右足首D=1881/左ひざD=1295/左足D=1104…）。
+    //    不带 D 的 左足/ひざ 只有骨架、不驱动皮 → 必须把 D 名字放第一候选。
+    thighL:    ['左足D', '左足', 'thighL'],
+    thighR:    ['右足D', '右足', 'thighR'],
+    kneeL:     ['左ひざD', '左ひざ', 'kneeL'],
+    kneeR:     ['右ひざD', '右ひざ', 'kneeR'],
+    ankleL:    ['左足首D', '左足首', 'ankleL'],
+    ankleR:    ['右足首D', '右足首', 'ankleR'],
+    toeL:      ['左つま先', 'toeL'],
+    toeR:      ['右つま先', 'toeR'],
+    ikLegL:    ['左足ＩＫ'],
+    ikLegR:    ['右足ＩＫ'],
+    ikToeL:    ['左つま先ＩＫ'],
+    ikToeR:    ['右つま先ＩＫ'],
+    eyeL:      ['左目', 'eyeL'],
+    eyeR:      ['右目', 'eyeR'],
+    eyes:      ['両目', 'eyes'],
+    bustL:     ['左胸'],
+    bustR:     ['右胸'],
+};
+
+// 按别名取骨骼（取不到返回 null，不抛异常）
+function _bone(key) {
+    try { return _findBoneWithAlias(_BONE_ALIASES[key] || []); } catch (e) { return null; }
+}
+
+// 一次性把常用骨骼抓出来缓存（模型就绪后调用）；取不到的键为 null
+let _B = {};
+function _cacheBones() {
+    var keys = Object.keys(_BONE_ALIASES), got = 0, miss = [];
+    _B = {};
+    for (var i = 0; i < keys.length; i++) {
+        var b = _bone(keys[i]);
+        _B[keys[i]] = b;
+        if (b) { got++; } else { miss.push(keys[i]); }
+    }
+    console.log('[MMD] 骨骼接线完成: ' + got + '/' + keys.length + ' 可用'
+        + (miss.length ? ('，未命中: ' + miss.join(',')) : ''));
+    window.__xjDiag_boneMiss = miss.join(',');
+    return got;
+}
+
+function _findBoneWithAlias(candidates) {
+    if (!mesh || !mesh.skeleton) return null;
+    for (const name of candidates) {
+        const b = findBone(name);
+        if (b) return b;
+    }
+    return null;
+}
+
+// 骨骼动作库：name → 驱动函数。每个函数在 animation 循环里被不断调用(t为时间)叠加到骨骼上
+const _BONE_ACTIONS = {
+    // 点头：头部绕X轴轻微往复
+    nod: function(t) {
+        const b = _findBoneWithAlias(_BONE_ALIASES.head);
+        if (b) { b.rotation.x = Math.sin(t * 2.0) * 0.12; b.updateMatrixWorld(true); }
+    },
+    // 摇头：头部绕Y轴轻微往复
+    shake: function(t) {
+        const b = _findBoneWithAlias(_BONE_ALIASES.head);
+        if (b) { b.rotation.y = Math.sin(t * 2.5) * 0.18; b.updateMatrixWorld(true); }
+    },
+    // 待机呼吸：整体轻微起伏 + 微点头
+    idle: function(t) {
+        const b = _findBoneWithAlias(_BONE_ALIASES.head);
+        if (b) { b.rotation.x = Math.sin(t * 0.8) * 0.03; b.updateMatrixWorld(true); }
+    },
+};
+
+
+// ═══════════════════ 2026-09-21 数字人·程序化动作库 ═══════════════════
+// 每个动作是 (t, dt) 函数，主循环每帧调用一次。
+// 铁律：旋转一律 = 动作开始时的基准值 + 偏移量，绝不累加 → 任何时刻打断都干净。
+let _boneBase = null;      // 动作开始时记录的全骨骼基准
+let _actStart = 0;         // 当前动作的起始时间
+let _lastDt = 0.016;
+let _prevT = 0;
+
+function _snapBase() {
+    _boneBase = {};
+    for (var k in _B) {
+        var b = _B[k];
+        if (b && b.rotation) {
+            _boneBase[k] = { x: b.rotation.x, y: b.rotation.y, z: b.rotation.z, py: b.position.y };
+        }
+    }
+    _actStart = _prevT;
+}
+function _setR(key, dx, dy, dz) {
+    var b = _B[key], base = _boneBase && _boneBase[key];
+    if (!b || !base) return;
+    b.rotation.x = base.x + (dx || 0);
+    b.rotation.y = base.y + (dy || 0);
+    b.rotation.z = base.z + (dz || 0);
+    // 🔴 2026-09-21 真根因修复：必须显式刷新骨骼矩阵。
+    // 翻 lib/MMDAnimationHelper.js 得知：update() 里 IK 分支会执行 mesh.updateMatrixWorld(true)，
+    // 渲染用的就是那次的矩阵。我们只改 rotation 不刷新 → 腿的修改进不了渲染
+    // → 表现就是"getBoneAngles 读数完全正确、画面上腿纹丝不动"。
+    // （手臂那段老代码一直生效，正是因为它每次都显式调了 updateMatrixWorld。）
+    try { b.updateMatrixWorld(true); } catch (e) {}
+}
+function _setCenterY(dy) {
+    var c = _B.center, base = _boneBase && _boneBase.center;
+    if (c && base) { c.position.y = base.py + (dy || 0); try { c.updateMatrixWorld(true); } catch (e) {} }
+}
+function _ease(p) { p = Math.min(1, Math.max(0, p)); return p * p * (3 - 2 * p); }
+function _since(t) { return (t - _actStart); }
+
+// ── 待机：呼吸 + 微动（永不重复）──
+function _actIdle(t, dt) {
+    var br = Math.sin(t * 1.05), b2 = Math.sin(t * 0.47 + 1.3);
+    _setR('spine', 0.014 * br, 0.010 * b2, 0);
+    _setR('chest', 0.010 * br, 0, 0);
+    _setR('hips', 0, 0.012 * Math.sin(t * 0.33), 0.008 * br);
+    _setR('head', 0.022 * Math.sin(t * 0.66), 0.030 * Math.sin(t * 0.41 + 0.7), 0.010 * br);
+    _setR('neck', 0.012 * Math.sin(t * 0.66), 0.015 * Math.sin(t * 0.41 + 0.7), 0);
+    _setR('shoulderL', 0.010 * br, 0, 0);
+    _setR('shoulderR', 0.010 * br, 0, 0);
+    _setR('upperArmL', 0.026 * Math.sin(t * 0.8), 0, 0.014 * br);
+    _setR('upperArmR', 0.026 * Math.sin(t * 0.8 + 0.9), 0, -0.014 * br);
+    _setR('elbowL', -0.06 - 0.02 * br, 0, 0);
+    _setR('elbowR', -0.06 - 0.02 * br, 0, 0);
+    _setR('thighL', 0.010 * Math.sin(t * 0.5), 0, 0);
+    _setR('thighR', 0.010 * Math.sin(t * 0.5 + 2.1), 0, 0);
+    _setCenterY(0.012 * br);
+}
+
+// ── 走路：左右大腿反相摆动 + 膝盖跟随 + 手臂反向 + 躯干起伏 ──
+const _WALK = { w: 7.2, thigh: 0.55, knee: 0.70, arm: 0.36, bob: 0.045 };
+function _actWalk(t, dt) {
+    var ph = t * _WALK.w, s = Math.sin(ph), c = Math.cos(ph);
+    _setR('thighL', _WALK.thigh * s, 0, 0);
+    _setR('thighR', -_WALK.thigh * s, 0, 0);
+    _setR('kneeL', -_WALK.knee * Math.max(0, -Math.sin(ph - 0.7)), 0, 0);
+    _setR('kneeR', -_WALK.knee * Math.max(0, Math.sin(ph - 0.7)), 0, 0);
+    _setR('ankleL', 0.20 * Math.sin(ph + 0.4), 0, 0);
+    _setR('ankleR', -0.20 * Math.sin(ph + 0.4), 0, 0);
+    _setR('toeL', 0.10 * Math.max(0, s), 0, 0);
+    _setR('toeR', 0.10 * Math.max(0, -s), 0, 0);
+    _setR('upperArmL', -_WALK.arm * s, 0, 0.06);
+    _setR('upperArmR', _WALK.arm * s, 0, -0.06);
+    _setR('elbowL', -0.30 - 0.10 * Math.abs(s), 0, 0);
+    _setR('elbowR', -0.30 - 0.10 * Math.abs(s), 0, 0);
+    _setR('spine', 0.035, 0.07 * s, 0);
+    _setR('chest', 0.02, -0.04 * s, 0);
+    _setR('hips', 0, -0.06 * s, 0.03 * c);
+    _setR('head', 0.015 * c, -0.05 * s, 0);
+    _setCenterY(_WALK.bob * Math.abs(c));
+}
+
+// ── 坐下（膝盖必须弯）──
+const _SIT = { thigh: -1.30, knee: 1.50, ankle: 0.38, spine: -0.12, drop: 0.62 };
+function _actSit(t, dt) {
+    var e = _ease(_since(t) / 0.95);
+    _setR('thighL', _SIT.thigh * e, 0, 0);
+    _setR('thighR', _SIT.thigh * e, 0, 0);
+    _setR('kneeL', _SIT.knee * e, 0, 0);
+    _setR('kneeR', _SIT.knee * e, 0, 0);
+    _setR('ankleL', _SIT.ankle * e, 0, 0);
+    _setR('ankleR', _SIT.ankle * e, 0, 0);
+    _setR('spine', _SIT.spine * e, 0, 0);
+    _setR('head', -0.05 * e, 0, 0);
+    _setR('upperArmL', -0.18 * e, 0, 0.10 * e);
+    _setR('upperArmR', -0.18 * e, 0, -0.10 * e);
+    _setR('elbowL', -0.35 * e, 0, 0);
+    _setR('elbowR', -0.35 * e, 0, 0);
+    _setCenterY(-_SIT.drop * e);
+    var br = Math.sin(t * 1.05);
+    _setR('chest', 0.012 * br, 0, 0);
+}
+
+// ── 站起来：从坐姿过渡回站姿 ──
+function _actStand(t, dt) {
+    var e = 1 - _ease(_since(t) / 1.0);
+    _setR('thighL', _SIT.thigh * e, 0, 0);
+    _setR('thighR', _SIT.thigh * e, 0, 0);
+    _setR('kneeL', _SIT.knee * e, 0, 0);
+    _setR('kneeR', _SIT.knee * e, 0, 0);
+    _setR('ankleL', _SIT.ankle * e, 0, 0);
+    _setR('ankleR', _SIT.ankle * e, 0, 0);
+    _setR('spine', _SIT.spine * e, 0, 0);
+    _setR('upperArmL', -0.18 * e, 0, 0.10 * e);
+    _setR('upperArmR', -0.18 * e, 0, -0.10 * e);
+    _setR('elbowL', -0.35 * e, 0, 0);
+    _setR('elbowR', -0.35 * e, 0, 0);
+    _setCenterY(-_SIT.drop * e);
+}
+
+// ── 挥手打招呼 ──
+function _actWave(t, dt) {
+    var el = _since(t);
+    var e = _ease(el / 0.35);
+    var w = Math.sin(el * 9.0);
+    _setR('shoulderR', 0, 0, -0.18 * e);
+    _setR('upperArmR', -1.10 * e, 0, -0.62 * e);
+    _setR('elbowR', 0, 0, (1.05 + 0.30 * w) * e);
+    _setR('wristR', 0, 0, 0.30 * w * e);
+    _setR('head', 0, -0.14 * e, 0.05 * e);
+    _setR('spine', 0.03 * e, -0.05 * e, -0.04 * e);
+    _setR('upperArmL', 0.06 * e, 0, 0.05 * e);
+    var br = Math.sin(t * 1.05);
+    _setR('chest', 0.010 * br, 0, 0);
+}
+
+// ── 鞠躬 ──
+function _actBow(t, dt) {
+    var el = _since(t);
+    var u = el < 0.65 ? el / 0.65 : (el < 1.7 ? 1 : Math.max(0, 1 - (el - 1.7) / 0.8));
+    var e = _ease(u);
+    _setR('spine', -0.48 * e, 0, 0);
+    _setR('hips', -0.10 * e, 0, 0);
+    _setR('head', -0.24 * e, 0, 0);
+    _setR('neck', -0.10 * e, 0, 0);
+    _setR('upperArmL', 0.10 * e, 0, 0.14 * e);
+    _setR('upperArmR', 0.10 * e, 0, -0.14 * e);
+    _setR('elbowL', -0.12 * e, 0, 0);
+    _setR('elbowR', -0.12 * e, 0, 0);
+}
+
+// ── 跳舞（腿要动）──
+function _actDance(t, dt) {
+    var el = _since(t), b = el * 3.6, s = Math.sin(b), c = Math.cos(b);
+    var e = _ease(el / 0.5);
+    _setR('thighL', 0.50 * s * e, 0, 0);
+    _setR('thighR', -0.50 * s * e, 0, 0);
+    _setR('kneeL', -0.60 * Math.max(0, -s) * e, 0, 0);
+    _setR('kneeR', -0.60 * Math.max(0, s) * e, 0, 0);
+    // 髋部左右摆 + 脚下踩点，视觉上更"在跳"
+    _setR('ankleL', 0.20 * Math.max(0, s) * e, 0, 0);
+    _setR('ankleR', 0.20 * Math.max(0, -s) * e, 0, 0);
+    _setR('ankleL', 0.12 * s * e, 0, 0);
+    _setR('ankleR', -0.12 * s * e, 0, 0);
+    _setR('hips', 0, 0.20 * Math.sin(b * 0.5) * e, 0.12 * s * e);
+    _setR('spine', 0.06 * c * e, 0.12 * Math.sin(b * 0.5) * e, -0.05 * s * e);
+    _setR('chest', 0.04 * c * e, 0.06 * Math.sin(b * 0.5) * e, 0);
+    _setR('upperArmL', (-0.40 - 0.60 * Math.max(0, s)) * e, 0, (0.40 + 0.30 * s) * e);
+    _setR('upperArmR', (-0.40 - 0.60 * Math.max(0, -s)) * e, 0, -(0.40 + 0.30 * -s) * e);
+    _setR('elbowL', 0, 0, (0.80 + 0.40 * s) * e);
+    _setR('elbowR', 0, 0, -(0.80 + 0.40 * -s) * e);
+    _setR('head', 0.06 * c * e, 0.18 * Math.sin(b * 0.5) * e, 0.07 * s * e);
+    _setCenterY(0.05 * Math.abs(s) * e);
+}
+
+// 注册进动作库（覆盖同名旧项）
+_BONE_ACTIONS.idle = _actIdle;
+_BONE_ACTIONS.walk = _actWalk;
+_BONE_ACTIONS.sit = _actSit;
+_BONE_ACTIONS.stand = _actStand;
+_BONE_ACTIONS.wave = _actWave;
+_BONE_ACTIONS.bow = _actBow;
+_BONE_ACTIONS.dance = _actDance;
+
+// ═══════════════════ 待机漫游 + 注意力状态 ═══════════════════
+const _WANDER = {
+    on: false,
+    attention: 'idle',     // idle | wander | approach | listen | speak
+    home: { x: 0, z: 0 },
+    radius: 2.0,           // 漫游半径（保守，别掉出圆盘）
+    target: null,
+    waitUntil: 0,
+    speed: 1.05,
+    frontZ: 1.35,          // "镜头前"的 z 位置（相机在 +z 侧）
+    faceYaw: 0,
+    walking: false,
+};
+let _modelYaw = 0;         // 模型当前朝向（弧度）
+
+function _pickWanderTarget() {
+    var a = Math.random() * Math.PI * 2, r = _WANDER.radius * (0.35 + 0.65 * Math.random());
+    _WANDER.target = { x: _WANDER.home.x + Math.sin(a) * r, z: _WANDER.home.z + Math.cos(a) * r };
+    _WANDER.waitUntil = 0;
+}
+
+function _setAttention(mode) {
+    // 🔴 2026-09-21：漫游/走近也必须让主循环跑骨骼驱动，否则 _activeBoneAction=null 时走路动画不会生效
+    _WANDER.attention = mode;
+    if (!_activeBoneAction || _activeBoneAction === 'idle') { _snapBase(); _activeBoneAction = 'idle'; }
+    if (mode === 'idle') { _WANDER.on = false; }
+    else { _WANDER.on = true; }
+    if (mode === 'wander') { _pickWanderTarget(); }
+    if (mode === 'approach' || mode === 'listen' || mode === 'speak') {
+        // 走到镜头前
+        _WANDER.target = { x: 0, z: _WANDER.frontZ };
+    }
+    console.log('[数字人] setAttention → ' + mode);
+    return 'attention:' + mode;
+}
+
+// 每帧：移动 + 转身 + 走路骨骼动画（由主循环调用）
+function _wanderUpdate(t, dt) {
+    if (!mesh) return;
+    if (!_WANDER.on) { _WANDER.walking = false; return; }
+
+    var att = _WANDER.attention;
+    var px = mesh.position.x, pz = mesh.position.z;
+
+    // 需要走到镜头前：到位后停住并朝相机（+z）
+    if (att === 'approach' || att === 'listen' || att === 'speak') {
+        var dz = _WANDER.frontZ - pz, dx = 0 - px;
+        var d = Math.sqrt(dx * dx + dz * dz);
+        if (d > 0.06) {
+            _WANDER.walking = true;
+            var step = Math.min(d, _WANDER.speed * dt);
+            mesh.position.x = px + (dx / d) * step;
+            mesh.position.z = pz + (dz / d) * step;
+            _modelYaw = 0;   // 朝 +z（面向相机）
+        } else {
+            _WANDER.walking = false;
+            _modelYaw = 0;
+        }
+        mesh.rotation.y = _modelYaw;
+        return;
+    }
+
+    // 漫游
+    if (att === 'wander') {
+        if (t < _WANDER.waitUntil) { _WANDER.walking = false; mesh.rotation.y = _modelYaw; return; }
+        if (!_WANDER.target) _pickWanderTarget();
+        var tg = _WANDER.target;
+        var vx = tg.x - px, vz = tg.z - pz;
+        var dist = Math.sqrt(vx * vx + vz * vz);
+        if (dist < 0.10) {
+            _WANDER.walking = false;
+            _WANDER.target = null;
+            _WANDER.waitUntil = t + 1.2 + Math.random() * 2.6;   // 随机停顿
+            return;
+        }
+        _WANDER.walking = true;
+        var sp = Math.min(dist, _WANDER.speed * dt);
+        mesh.position.x = px + (vx / dist) * sp;
+        mesh.position.z = pz + (vz / dist) * sp;
+        // 平滑转向目标方向（模型默认朝 +z）
+        var want = Math.atan2(vx, vz);
+        var diff = want - _modelYaw;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        _modelYaw += diff * Math.min(1, dt * 5.0);
+        mesh.rotation.y = _modelYaw;
+        return;
+    }
+    _WANDER.walking = false;
+}
+
+// 当前正在执行的骨骼动作名（null=无，只做待机/定格）
+let _activeBoneAction = null;
+let _playingVmd = false;   // 是否正在播放 .vmd 外部动作(播放时暂停代码驱动的待机骨骼覆盖)
+let _actionEpoch = 0;      // 每次停止/换动作自增，作废在途的 loadAnimation 回调（防“喊停之后舞又起”）
+let _curVmdAction = null;  // 当前正在播的外部 vmd 动作名（null=无），供 getState 回读
+let _frameCount = 0;      // rAF 驱动的主循环帧计数（诊断用：若它停了说明 rAF 停了）
+
+// 供 Python 侧 runJavaScript 回读真实状态（window.py 探针读 __xjDiag_mmdReady；本页 getState 读全量）
+function _refreshDiagFlags() {
+    try {
+        window.__xjDiag_mmdReady = !!mesh;   // 模型已加载即算可下发动作（helper 首次播放时按需构建）
+    } catch (e) {}
+}
+
+// ── 2026-09-21：MMD 的 IK 必须处理 ──
+// 模型腿上带 IK（左足ＩＫ 等）；IK 启用时会每帧把腿拉回目标位置，直接转大腿/膝盖看不到效果。
+// 这里先探明 IK 结构（_diagIK），再按需关闭（_disableIK）。
+function _diagIK() {
+    try {
+        if (!mesh) return JSON.stringify({ err: 'no-mesh' });
+        var out = { meshKeys: [], geoUserData: null, ikCount: -1, boneIK: [], CCDIK: [] };
+        try { out.meshKeys = Object.keys(mesh).filter(function (k) { return /ik|IK|userData|skeleton/i.test(k); }); } catch (e) {}
+        try {
+            var ud = mesh.geometry && mesh.geometry.userData;
+            if (ud && ud.MMD) {
+                out.geoUserData = 'MMD:' + Object.keys(ud.MMD).join(',');
+                if (ud.MMD.iks) out.ikCount = ud.MMD.iks.length;
+            } else { out.geoUserData = ud ? Object.keys(ud).join(',') : 'none'; }
+        } catch (e) {}
+        try {
+            var bs = mesh.skeleton.bones;
+            for (var i = 0; i < bs.length; i++) {
+                var b = bs[i];
+                if (b.ikSolver) out.boneIK.push(b.name + ':' + (b.ikSolver.enabled === undefined ? '?' : b.ikSolver.enabled));
+                if (b.isIK) out.boneIK.push(b.name + ':isIK');
+            }
+        } catch (e) {}
+        try {
+            if (_mmdHelper && _mmdHelper._ikSolver) out.CCDIK.push('helper._ikSolver');
+            if (_mmdHelper && _mmdHelper.objects) {
+                for (var m in _mmdHelper.objects) {
+                    var o = _mmdHelper.objects[m];
+                    if (o) {
+                        if (o.ikSolver) out.CCDIK.push(m + '.ikSolver');
+                        if (o.solver) out.CCDIK.push(m + '.solver');
+                        if (o.ccdikSolver) out.CCDIK.push(m + '.ccdikSolver');
+                    }
+                }
+            }
+        } catch (e) {}
+        try { if (mesh.userData) out.meshUserDataKeys = Object.keys(mesh.userData); } catch (e) {}
+        try { if (mesh.userData && mesh.userData.ikSolver) out.CCDIK.push('mesh.userData.ikSolver'); } catch (e) {}
+        return JSON.stringify(out);
+    } catch (e) { return JSON.stringify({ err: String(e) }); }
+}
+
+let _ikDisabled = false;
+function _disableIK() {
+    if (_ikDisabled) { return 'already'; }
+    var n = 0, where = [];
+    try {
+        // a) 骨骼上的 ikSolver
+        if (mesh && mesh.skeleton && mesh.skeleton.bones) {
+            var bs = mesh.skeleton.bones;
+            for (var i = 0; i < bs.length; i++) {
+                var b = bs[i];
+                if (b.ikSolver) { try { b.ikSolver.enabled = false; n++; } catch (e) {} }
+                if (b.isIK !== undefined) { try { b.isIK = false; } catch (e) {} }
+            }
+        }
+        // b) CCDIKSolver 可能挂在这几个地方
+        var cands = [];
+        if (_mmdHelper) {
+            if (_mmdHelper._ikSolver) cands.push(_mmdHelper._ikSolver);
+            if (_mmdHelper.objects) {
+                for (var m in _mmdHelper.objects) {
+                    var o = _mmdHelper.objects[m];
+                    if (!o) continue;
+                    if (o.ikSolver) cands.push(o.ikSolver);
+                    if (o.solver) cands.push(o.solver);
+                    if (o.ccdikSolver) cands.push(o.ccdikSolver);
+                }
+            }
+        }
+        if (mesh && mesh.userData && mesh.userData.ikSolver) { cands.push(mesh.userData.ikSolver); }
+        // c) MMDGeometry 里的 iks 直接清空（CCDIKSolver 每帧读它）
+        if (mesh && mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.MMD
+            && mesh.geometry.userData.MMD.iks) {
+            try { where.push('geo.iks=' + mesh.geometry.userData.MMD.iks.length); mesh.geometry.userData.MMD.iks = []; } catch (e) {}
+        }
+        for (var c = 0; c < cands.length; c++) {
+            try { cands[c].enabled = false; n++; } catch (e) {}
+            try { if (cands[c].iks) { where.push('ikSolver.iks=' + cands[c].iks.length); cands[c].iks = []; } } catch (e) {}
+        }
+        // 真开关在 helper.enabled.ik（见 _mmdUpdate 注释）
+        try { if (_mmdHelper && _mmdHelper.enabled) { _mmdHelper.enabled.ik = false; n++; } } catch (e) {}
+        _ikDisabled = true;
+        console.log('[MMD] IK 已处理: disabledSolver=' + n + ' ' + where.join(' '));
+        return 'disabled=' + n + ' ' + where.join(' ');
+    } catch (e) { console.warn('[MMD] 关闭 IK 失败: ' + e); return 'err:' + e; }
+}
+
+function _updateBoneAction(t) {
+    var dt = (t > _prevT) ? Math.min(0.12, t - _prevT) : 0.016;
+    _prevT = t; _lastDt = dt;
+    // 漫游/走近时用走路动画驱动腿
+    var useWalk = (_WANDER && _WANDER.on && _WANDER.walking);
+    var name = useWalk ? 'walk' : _activeBoneAction;
+    const fn = _BONE_ACTIONS[name];
+    if (fn) fn(t, dt);
+    if (_WANDER && _WANDER.on) { try { _wanderUpdate(t, dt); } catch (e) {} }
+}
+
+// ─── 统一动作入口：vmd外部动作 或 内置骨骼动作 ───
+let _danceTimer = null;
+
+// ── 动作链路诊断上报（2026-09-01）：playAction/stopAction 各节点打标记，玄机日志可定位动作走到哪一步 ──
+function _diagAction(tag, name, detail) {
+    try { console.log('[ACT] ' + tag + ' | name=' + (name||'') + (detail ? ' | ' + detail : '')); } catch(e) {}
+}
+
+// ── 全身骨骼复位（2026-09-21 加）──
+// 背景：stopAction 只停了动画播放器，没复位骨骼 → 身体/腿停在 VMD 最后一帧，看着像没停。
+function _recordAllBones() {
+    try {
+        if (!mesh || !mesh.skeleton || !mesh.skeleton.bones) { return; }
+        _allBoneInit = [];
+        for (var i = 0; i < mesh.skeleton.bones.length; i++) {
+            var b = mesh.skeleton.bones[i];
+            _allBoneInit.push({
+                r: { x: b.rotation.x, y: b.rotation.y, z: b.rotation.z },
+                p: { x: b.position.x, y: b.position.y, z: b.position.z }
+            });
+        }
+        console.log('[MMD] 已记录全身骨骼初始姿态: ' + _allBoneInit.length + ' 根');
+    } catch (e) { console.warn('[MMD] 记录骨骼初始姿态失败: ' + e); }
+}
+
+function _resetAllBones() {
+    try {
+        if (!mesh || !mesh.skeleton || !_allBoneInit) { return 0; }
+        var bs = mesh.skeleton.bones, n = 0;
+        for (var i = 0; i < bs.length && i < _allBoneInit.length; i++) {
+            var init = _allBoneInit[i], b = bs[i];
+            b.rotation.set(init.r.x, init.r.y, init.r.z);
+            b.position.set(init.p.x, init.p.y, init.p.z);
+            b.updateMatrixWorld(true);
+            n++;
+        }
+        console.log('[MMD] 已复位全身骨骼 ' + n + ' 根（回初始姿态，手臂随后由待机逻辑接管）');
+        return n;
+    } catch (e) { console.warn('[MMD] 复位骨骼失败: ' + e); return 0; }
+}
+
+// 停止所有 3D 动作，回到待机
+function stopAction() {
+    console.log('[MMD] stopAction 停止所有动作');
+    _diagAction('停止', '', 'stopAction 入口, _danceTimer=' + (_danceTimer ? '有' : '无') + ', mesh=' + (mesh ? '有' : '无'));
+    _actionEpoch++;          // 🔴 作废所有在途的 loadAnimation 回调，防止“喊停之后 VMD 才加载完又开跳”
+    if (_danceTimer) { clearTimeout(_danceTimer); _danceTimer = null; }
+    // 清空 mixer 所有动 g：不仅 stopAllAction，还要把残留 action 全部 stop/reset/清空，否则骨骼停在 VMD 最后一帧姿势
+    if (mesh && mesh.animationMixer) {
+        try { mesh.animationMixer.stopAllAction(); } catch (e) {}
+        try {
+            if (mesh.animationMixer._actions) {
+                var _acts = mesh.animationMixer._actions;
+                for (var _i = 0; _i < _acts.length; _i++) { try { _acts[_i].stop(); _acts[_i].reset(); } catch (e2) {} }
+                _acts.length = 0;
+            }
+        } catch (e) {}
+    }
+    if (_mmdHelper && mesh) {
+        try { _mmdHelper.remove(mesh); } catch (e) {}
+    }
+    _resetAllBones();         // 🔴 2026-09-21：全身骨骼复位（否则身体/腿停在 VMD 最后一帧，看着像没停）
+    _playingVmd = false;      // 恢复待机骨骼驱动
+    _activeBoneAction = 'idle'; // 回待机呼吸（不再是 null，恢复待机状态）
+    _curVmdAction = null;
+    window.__xjDiag_lastResult = 'stopped';
+    _refreshDiagFlags();
+    _diagAction('停止', '', '已清空动画+回待机, _playingVmd=false, epoch=' + _actionEpoch + ', armLock=' + (state ? state.armLock : '?'));
+    return 'stopped';
+}
+
+function playAction(name, vmdPath) {
+    console.log('[MMD] playAction 入口: name=' + name + ' mesh=' + (mesh ? 'ok' : 'null'));
+    _diagAction('入口', name, 'mesh=' + (mesh ? 'ok' : 'null'));
+    if (!mesh) { console.warn('[MMD] 模型未就绪'); _diagAction('失败', name, 'no-mesh 模型未就绪'); return 'no-mesh'; }
+
+    // 0) 停止命令：彻底停下，回待机（用户说"停/别动了"等）
+    if (name === 'stop' || name === 'idle') {
+        _diagAction('停止命令', name, '调 stopAction');
+        return stopAction();
+    }
+
+    // 2) 内置骨骼动作（方案B）：不用外部文件
+    if (name in _BONE_ACTIONS && !vmdPath) {
+        stopAction();
+        _snapBase();                 // 2026-09-21：记录基准姿态（动作按"基准+偏移"计算，可随时打断）
+        _activeBoneAction = name;
+        console.log('[MMD] 播放骨骼动作: ' + name);
+        return 'playing-bone:' + name;
+    }
+
+        // 🔴 2026-09-21：整段 VMD 录像播放路径已拆除（作者指令：去掉 vox 动作，只做数字人）。
+    //    现在动作只有一条路：_BONE_ACTIONS 里的程序化骨骼动作。
+    console.warn('[MMD] 无此程序化动作（VMD 路径已移除）: ' + name);
+    _diagAction('失败', name, 'unknown 无此程序化动作(VMD已移除)');
+    return 'unknown';
+}
+
+function _mmdUpdate(delta) {
+    if (_mmdHelper && _mmdReady) {
+        // 🔴 2026-09-21：关掉 MMD 的 IK。
+        // 源码依据：lib/MMDAnimationHelper.js:539 `if ( ikSolver && this.enabled.ik ) { ikSolver.update(); }`
+        // 不关的话 IK 每帧按 IK 目标重算腿的旋转，把我们程序化设的 thigh/knee 全部覆盖
+        // → 表现就是"读数变了、画面上腿纹丝不动"（坐下时最明显）。
+        try { if (_mmdHelper.enabled && _mmdHelper.enabled.ik) { _mmdHelper.enabled.ik = false; console.log('[MMD] 已关闭 IK（enabled.ik=false）'); } } catch (e) {}
+        try { _mmdHelper.update(delta); } catch (e) {}
+    }
+}
+
+// 先探测morph名称
+const modelPath = 'models/琳奈.pmx';
+
+// ─── 相机适配：按模型实际尺寸取景（全身 / 胸部以上） ───
+function getModelHeight() {
+    if (!mesh) return 0;
+    const box = new THREE.Box3().setFromObject(mesh);
+    return box.max.y - box.min.y;
+}
+
+// ─── 待机摆臂：记录手臂骨骼初始姿态，动画里叠加轻摆 ───
+// 🔴 2026-08-24 修复：ARM_DOWN_Z 从 -1.0 改为 -0.7！
+// 实测：-1.0 时上臂完全竖直贴躯干（手x=1.51 在躯干宽度内），正面被躯干挡住看不到胳膊（用户反馈"胳膊在身后"）。
+//       -0.6 手x=3.57 完全可见；-0.8 手x=2.56 肘x=1.77 上臂部分被挡。取 -0.7 平衡：自然斜垂 + 上臂可见。
+const ARM_DOWN_Z = -0.7;   // 上臂下垂基准（Z轴旋转，左臂-、右臂+镜像）——2026-08-24 实测 -0.7 可见
+const ELBOW_DOWN_Z = 0.10; // 肘部自然微弯基准
+
+function findBone(name) {
+    if (!mesh || !mesh.skeleton) return null;
+    for (const b of mesh.skeleton.bones) {
+        if (b.name === name) return b;
+    }
+    return null;
+}
+
+function initArmBones() {
+    state.armBones = {
+        lUpper: findBone('左腕'), rUpper: findBone('右腕'),
+        lElbow: findBone('左ひじ'), rElbow: findBone('右ひじ'),
+        lHand: findBone('左手首'), rHand: findBone('右手首'),
+    };
+    for (const k in state.armBones) {
+        const b = state.armBones[k];
+        if (b) state.armBones[k + '_init'] = { x: b.rotation.x, y: b.rotation.y, z: b.rotation.z };
+    }
+    console.log('[Xuanji3D] 摆臂骨骼:', Object.keys(state.armBones).filter(k => state.armBones[k]).join(', '));
+}
+
+function fitCamera(mode) {
+    if (!mesh) return;
+    const box = new THREE.Box3().setFromObject(mesh);
+    const h = box.max.y - box.min.y;
+    const cy = (box.max.y + box.min.y) / 2;
+    const fov = camera.fov * Math.PI / 180;
+    if (mode === 'bust') {
+        // 胸部以上：头部到胸口，放大显示
+        const headY = box.max.y - h * 0.10;   // 头顶附近
+        const bustH = h * 0.38;               // 头→胸 高度
+        const dist = (bustH / 2 / Math.tan(fov / 2)) * 1.02;
+        camera.position.set(0, headY, dist);
+        controls.target.set(0, headY, 0);
+    } else {
+        // 全身：完整显示，上下留 8% 边距
+        const dist = (h / 2 / Math.tan(fov / 2)) * 1.08;
+        camera.position.set(0, cy, dist);
+        controls.target.set(0, cy, 0);
+    }
+    controls.update();
+}
+
+loader.load(modelPath, function(result) {
+    mesh = result;
+    setTimeout(_recordAllBones, 60);   // 等主循环把手臂摆到待机位置后再快照初始姿态
+    setTimeout(function () { _cacheBones(); }, 80);          // 2026-09-21：骨骼接线（补全别名后缓存）
+    setTimeout(function () {                                 // 🔴 2026-09-21：关 IK
+        // 不关的话 CCDIK 每帧按 IK 目标重算腿的旋转，把我们设的 thigh/knee 值覆盖掉
+        // → 表现就是"读数变了、画面上腿纹丝不动"。程序化动作全部自己做 FK，不需要 IK。
+        try { console.log('[MMD] 关 IK 结果: ' + _disableIK()); } catch (e) {}
+    }, 120);
+    mesh.position.set(0, 0, 0);
+    mesh.scale.set(1, 1, 1);
+    
+    mesh.traverse(function(child) {
+        if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+        }
+    });
+    
+    scene.add(mesh);
+    
+    // 建立morph映射（兼容中/日/英文名）
+    if (mesh.morphTargetDictionary) {
+        for (const name in mesh.morphTargetDictionary) {
+            const idx = mesh.morphTargetDictionary[name];
+            // 口型
+            if (['あ','a','A','い','i','I','う','u','U','え','e','E','お','o','O'].includes(name)) {
+                morphMap.mouth = morphMap.mouth || [];
+                morphMap.mouth.push({name, idx});
+            }
+            // 眨眼：只用"双眼闭合"morph（blink/まばたき），排除单眼ウィンク系列
+            if (['まばたき','blink','Blink','BLINK','mabataki'].includes(name)) {
+                morphMap.blink = morphMap.blink || [];
+                morphMap.blink.push({name, idx});
+            }
+            // 微笑
+            if (['笑い','微笑み','smile','Smile','えがお','笑顔','にっこり'].includes(name)) {
+                morphMap.smile = morphMap.smile || [];
+                morphMap.smile.push({name, idx});
+            }
+            // 悲伤
+            if (['悲しみ','sad','Sad','泣き','cry'].includes(name)) {
+                morphMap.sad = morphMap.sad || [];
+                morphMap.sad.push({name, idx});
+            }
+            // 惊讶
+            if (['驚き','おどろき','surprise','Surprise','あ','ア'].includes(name)) {
+                morphMap.surprise = morphMap.surprise || [];
+                morphMap.surprise.push({name, idx});
+            }
+            // 生气
+            if (['怒り','いかり','angry','Angry','怒'].includes(name)) {
+                morphMap.angry = morphMap.angry || [];
+                morphMap.angry.push({name, idx});
+            }
+            // 默认存一个通用映射
+            morphMap[name] = idx;
+        }
+        console.log('[Morph] 映射:', Object.keys(morphMap).join(', '));
+    }
+    
+    document.getElementById('loading').style.display = 'none';
+    
+    // 按模型实际尺寸适配相机：默认全身完整显示（头顶到脚底都进画面）
+    state.viewMode = 'full';
+    fitCamera('full');
+    initArmBones();
+    _mmdAddMesh();
+    _refreshDiagFlags();
+    console.log('[Xuanji3D] 模型加载完成，高度=' + getModelHeight().toFixed(1) + ' fit=' + state.viewMode);
+    
+}, function(xhr) {
+    const pct = Math.round((xhr.loaded / xhr.total) * 100);
+    document.getElementById('loading').innerHTML = '<div class="spinner"></div>加载中 ' + pct + '%';
+}, function(err) {
+    document.getElementById('loading').innerHTML = '<div style="color:#ff6666;font-size:13px;">加载失败: ' + err.message + '</div>';
+    console.error('PMX Load Error:', err);
+});
+
+// ─── 设置morph值 ───
+function setMorph(name, value) {
+    if (!mesh || !mesh.morphTargetDictionary) return;
+    if (name in mesh.morphTargetDictionary) {
+        mesh.morphTargetInfluences[mesh.morphTargetDictionary[name]] = value;
+    }
+}
+
+function setMorphList(list, value) {
+    if (!list) return;
+    for (const m of list) {
+        mesh.morphTargetInfluences[m.idx] = value;
+    }
+}
+
+// ─── 动画循环 ───
+function animate() {
+    requestAnimationFrame(animate);
+    _frameCount++;
+    
+    const elapsed = clock.getElapsedTime();
+    const t = (state.debugTime !== null && state.debugTime !== undefined) ? state.debugTime : elapsed;
+    _mmdUpdate(0.016);
+    if (!_playingVmd) { _updateBoneAction(t); }   // 播放外部vmd时不驱动代码骨骼动作(避免打架)
+    
+    if (mesh) {
+        // 呼吸浮动（降到几乎不可察，避免"整个人上下晃"盖住手臂动作）
+        mesh.position.y = Math.sin(t * 1.2) * 0.012;
+        
+        // 呼吸缩放（微微起伏）
+        const breathScale = 1.0 + Math.sin(t * 2.0) * 0.004;
+        mesh.scale.set(breathScale, breathScale, breathScale);
+        
+        // ── 眨眼（自然节奏：快速闭→短保持→缓慢开） ──
+        state.blinkTimer += 0.016;
+        let blinkVal = 0;
+        if (state.blinkTimer > state.nextBlink) {
+            const phase = state.blinkTimer - state.nextBlink;
+            if (phase < 0.04) {
+                blinkVal = phase / 0.04;               // 0.04s 闭眼
+            } else if (phase < 0.12) {
+                blinkVal = 1.0;                         // 0.08s 保持闭合
+            } else if (phase < 0.24) {
+                blinkVal = 1.0 - (phase - 0.12) / 0.12; // 0.12s 缓慢睁开
+            } else {
+                state.blinkTimer = 0;
+                state.nextBlink = 2.5 + Math.random() * 3.5;
+            }
+        }
+        setMorphList(morphMap.blink, blinkVal);
+        
+        // ── 嘴巴：说话时随机元音口型+平滑，不说话完全闭嘴 ──
+        if (state.speaking) {
+            if (!state._nextMouthChange || t > state._nextMouthChange) {
+                state.mouthVowel = Math.floor(Math.random() * 5);   // 随机元音 あ/い/う/え/お
+                state.mouthTarget = 0.3 + Math.random() * 0.5;
+                state._nextMouthChange = t + 0.08 + Math.random() * 0.05;
+            }
+        } else {
+            state.mouthTarget = 0;
+        }
+        state.mouthOpen = state.mouthOpen * 0.6 + state.mouthTarget * 0.4;
+        if (morphMap.mouth && morphMap.mouth.length > 0) {
+            const vowels = ['あ','い','う','え','お'];
+            let vowelIdx = 0;
+            for (const m of morphMap.mouth) {
+                if (vowels.includes(m.name)) {
+                    mesh.morphTargetInfluences[m.idx] = (vowelIdx === state.mouthVowel) ? state.mouthOpen : 0;
+                    vowelIdx++;
+                } else {
+                    mesh.morphTargetInfluences[m.idx] = 0;
+                }
+            }
+        }
+        
+        // ── 待机动作：手臂固定自然下垂（ARM_DOWN_Z 校正，已验证成功） ──
+        // 2026-08-17 作者指令：去掉摆臂/交叉动画，胳膊正常下垂即可（之前动态摆动把胳膊转到身后看不到）
+        const ab = state.armBones;
+        // 🔴 2026-09-21 修：程序化动作（sit/wave/dance/walk…）自己管手臂时，这段"摁回下垂"必须让路，
+        // 否则任何手臂动作都会被每帧覆盖掉（实测：wave 时 spine/head 变了、upperArmR 却纹丝不动，就是这里）。
+        const _boneActOwnsArms = (_activeBoneAction && _activeBoneAction !== 'idle');
+        if (ab && !state.armLock && !_playingVmd && !_boneActOwnsArms) {   // 播外部vmd/代码动作时不覆盖手臂(避免与动作打架)
+            // 上臂：固定下垂基准（无摆动、无交叉）
+            const lUpperZ = ab.lUpper_init.z + ARM_DOWN_Z;
+            const rUpperZ = ab.rUpper_init.z - ARM_DOWN_Z;
+            // 肘部：固定自然微弯（无摆动）
+            const lElbowZ = ab.lElbow_init.z + ELBOW_DOWN_Z;
+            const rElbowZ = ab.rElbow_init.z - ELBOW_DOWN_Z;
+            if (ab.lUpper) {
+                ab.lUpper.rotation.set(ab.lUpper_init.x, ab.lUpper_init.y, lUpperZ);
+                ab.lUpper.updateMatrixWorld(true);
+            }
+            if (ab.rUpper) {
+                ab.rUpper.rotation.set(ab.rUpper_init.x, ab.rUpper_init.y, rUpperZ);
+                ab.rUpper.updateMatrixWorld(true);
+            }
+            if (ab.lElbow) {
+                ab.lElbow.rotation.set(ab.lElbow_init.x, ab.lElbow_init.y, lElbowZ);
+                ab.lElbow.updateMatrixWorld(true);
+            }
+            if (ab.rElbow) {
+                ab.rElbow.rotation.set(ab.rElbow_init.x, ab.rElbow_init.y, rElbowZ);
+                ab.rElbow.updateMatrixWorld(true);
+            }
+            // 手腕：保持初始姿态（不动）
+            if (ab.lHand) {
+                ab.lHand.rotation.set(ab.lHand_init.x, ab.lHand_init.y, ab.lHand_init.z);
+                ab.lHand.updateMatrixWorld(true);
+            }
+            if (ab.rHand) {
+                ab.rHand.rotation.set(ab.rHand_init.x, ab.rHand_init.y, ab.rHand_init.z);
+                ab.rHand.updateMatrixWorld(true);
+            }
+        }
+        
+        // ── 表情 ──
+        switch (state.emotion) {
+            case 'happy':
+                state.smileAmount += (0.5 - state.smileAmount) * 0.05;
+                if (_activeBoneAction === null) { _activeBoneAction = 'idle'; }
+                break;
+            case 'sad':
+                state.smileAmount += (-0.1 - state.smileAmount) * 0.05;
+                break;
+            case 'surprise':
+                state.smileAmount += (0.1 - state.smileAmount) * 0.05;
+                if (_activeBoneAction === null) { _activeBoneAction = 'nod'; }
+                break;
+            case 'angry':
+                state.smileAmount += (0.02 - state.smileAmount) * 0.05;
+                if (_activeBoneAction === null) { _activeBoneAction = 'shake'; }
+                break;
+            default:
+                state.smileAmount += (0.15 - state.smileAmount) * 0.05;
+        }
+        setMorphList(morphMap.smile, Math.max(0, state.smileAmount));
+        if (state.emotion === 'sad') {
+            setMorphList(morphMap.sad, 0.3 + 0.1 * Math.sin(t * 2));
+        } else {
+            setMorphList(morphMap.sad, 0);
+        }
+        // 方案C: 情绪表情叠加 (surprise/angry morph)
+        if (state.emotion === 'surprise') {
+            setMorphList(morphMap.surprise, 0.35 + 0.1 * Math.sin(t * 3));
+        } else {
+            setMorphList(morphMap.surprise, 0);
+        }
+        if (state.emotion === 'angry') {
+            setMorphList(morphMap.angry, 0.4);
+        } else {
+            setMorphList(morphMap.angry, 0);
+        }
+    }
+    
+    // ── 地面光晕呼吸 ──
+    glowCircle.material.opacity = 0.04 + 0.03 * Math.sin(t * 1.2);
+    
+    // ── 科技背景脉动：漩涡漂移 + 环星尘流旋转吸入 + 吸积环旋转呼吸 + 脚环呼吸 ──
+    skyMat.uniforms.uT.value = t;
+    starMat.opacity = 0.55 + 0.3 * Math.sin(t * 0.9);
+
+    // 大圆盘上的行星粒子：绕盘旋转 + 各自随机闪烁(消失再亮)，错落不一片黑
+    const sPos = stars.geometry.attributes.position.array;
+    const sSz  = stars.geometry.attributes.size.array;   // 每颗粒子size属性
+    const sT = Math.sin(DISK_TILT), cT = Math.cos(DISK_TILT);
+    for (let i = 0; i < starCount; i++) {
+        // 绕盘旋转（近心略快，缓缓不同步，有层次感）
+        const rr  = starOrbit[i];
+        const angSpeed = 1.1 / (rr + 6);
+        starAng[i] += angSpeed * 0.016;
+        const curR = rr;
+        // 盘面局部坐标（固定轨道，不收缩——大圆盘不需要吸入）
+        const lx = Math.cos(starAng[i]) * curR;
+        const ly = Math.sin(t * 0.5 + i) * 0.5;   // 盘面轻微起伏
+        const lz = Math.sin(starAng[i]) * curR;
+        // 绕X轴倾斜 → 立体盘面
+        sPos[i*3]   = BLACK_HOLE.x + lx;
+        sPos[i*3+1] = BLACK_HOLE.y + ly * cT - lz * sT;
+        sPos[i*3+2] = BLACK_HOLE.z + ly * sT + lz * cT;
+        // 独立随机闪烁：每颗粒子用自己随机的频率/相位，(亮-暗)随机错落，不是统一呼吸
+        const ph = t * starFreq[i] + starPhase[i];
+        const cyc = ph - Math.floor(ph);          // 三角/锯齿循环 0~1，等价fract
+        // 每个粒子随机“亮一段时间 / 暗一段时间”的开关切换（亮段占比随粒子而不同）
+        const duty = 0.25 + (starPhase[i] % 0.55);   // 亮暗占比随粒子不同
+        // smoothstep 软化开关沿（用正弦替代，避免硬切边）
+        const edgeLo = 0.5 + 0.5 * Math.sin((cyc - (duty - 0.15)) * 40.0);
+        const edgeHi = 0.5 + 0.5 * Math.cos((cyc - duty) * 40.0);
+        const on = Math.min(1, Math.max(0, edgeLo * (1.0 - edgeHi)));
+        // 亮段还有轻微强弱起伏，避免呆板
+        const fadeIn = 0.55 + 0.45 * Math.sin(cyc * 6.283 + starPhase[i]);
+        const amp = on * (0.5 + 0.5 * fadeIn);
+        sSz[i] = 0.25 + 1.15 * amp;   // 暗时极小接近消失，亮时放大——随机亮-灭-再亮
+    }
+    stars.geometry.attributes.position.needsUpdate = true;
+    stars.geometry.attributes.size.needsUpdate = true;
+
+    // 吸积环：整体旋转 + 亮度呼吸
+    accretionGold.rotation.z   = t * 0.12;
+    accretionPurple.rotation.z = -t * 0.08;
+    accretionBlue.rotation.z   = t * 0.05;
+    const ringPulse = 0.5 + 0.5 * Math.sin(t * 0.8);
+    accretionGold.material.opacity   = 0.22 + 0.16 * ringPulse;
+    accretionPurple.material.opacity = 0.14 + 0.10 * ringPulse;
+    accretionBlue.material.opacity   = 0.09 + 0.06 * ringPulse;
+    // 吸积环缓慢整体外扩再收回(呼吸推拉)
+    accretionGold.scale.setScalar(1.0 + 0.05 * ringPulse);
+    accretionPurple.scale.setScalar(1.0 + 0.05 * ringPulse);
+    accretionBlue.scale.setScalar(1.0 + 0.04 * ringPulse);
+
+    footRing.material.opacity = 0.35 + 0.25 * Math.sin(t * 1.3);
+    footRing.scale.setScalar(1 + 0.04 * Math.sin(t * 2.0));
+    
+    // ── 花瓣 ──
+    if (state.speaking && petals.material.opacity < 0.5) {
+        petals.material.opacity += 0.02;
+    } else if (!state.speaking && petals.material.opacity > 0) {
+        petals.material.opacity -= 0.01;
+    }
+    const pos = petals.geometry.attributes.position.array;
+    for (let i = 0; i < petalCount; i++) {
+        pos[i * 3] += velocities[i].vx * 0.2;
+        pos[i * 3 + 1] += velocities[i].vy * 0.2;
+        pos[i * 3 + 2] += velocities[i].vz * 0.2;
+        if (pos[i * 3 + 1] > 35) {
+            pos[i * 3] = (Math.random() - 0.5) * 30;
+            pos[i * 3 + 1] = -5;
+            pos[i * 3 + 2] = (Math.random() - 0.5) * 20 - 5;
+        }
+    }
+    petals.geometry.attributes.position.needsUpdate = true;
+    
+    controls.update();
+    renderer.render(scene, camera);
+}
+animate();
+
+// ─── 窗口自适应 ───
+window.addEventListener('resize', function() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ═══════════════════════════════════════════════
+//  Python → JS 通信接口
+//  由 QWebEngineView.page().runJavaScript() 调用
+// ═══════════════════════════════════════════════
+window.__xuanji3d = {
+    setSpeaking: function(speaking) {
+        state.speaking = speaking;
+    },
+    setEmotion: function(emotion) {
+        state.emotion = emotion;
+    },
+    setMorph: function(name, value) {
+        setMorph(name, value);
+    },
+    playAction: function(name, vmdPath) {
+        var r = playAction(name, vmdPath);
+        try { window.__xjDiag_lastResult = r; } catch (e) {}
+        return r;
+    },
+    stopAction: function() {
+        var r = stopAction();
+        try { window.__xjDiag_lastResult = r; } catch (e) {}
+        return r;
+    },
+    getState: function() {
+        // 回读页面真实状态：Python 侧 runJavaScript 带回调即可读到（禁止“发出去就当成功”）
+        var mixerDiag = null;
+        try {
+            var o = (_mmdHelper && mesh) ? _mmdHelper.objects.get(mesh) : null;
+            mixerDiag = {
+                meshHasMixer: !!(mesh && mesh.animationMixer),
+                helperHasMixer: !!(o && o.mixer),
+                helperActionCount: (o && o.mixer && o.mixer._actions) ? o.mixer._actions.length : 0,
+                helperLoops: (o && o.mixer && o.mixer._actions) ? o.mixer._actions.map(function(a) { return a.loop; }) : [],
+                helperClipDurations: (o && o.mixer && o.mixer._actions) ? o.mixer._actions.map(function(a) { return a._clip ? a._clip.duration : null; }) : [],
+                helperMixerTime: (o && o.mixer) ? o.mixer.time : null,
+                helperActions: (o && o.mixer && o.mixer._actions) ? o.mixer._actions.map(function(a) { return a ? { time: a.time, enabled: a.enabled, paused: a.paused, reps: a.repetitions, loopCount: a._loopCount } : null; }) : [],
+            };
+        } catch (e) { mixerDiag = { err: e.message }; }
+        return JSON.stringify({
+            playingVmd: _playingVmd,
+            activeBoneAction: _activeBoneAction,
+            curVmdAction: _curVmdAction,
+            meshReady: !!mesh,
+            helperReady: !!_mmdHelper,
+            epoch: _actionEpoch,
+            lastResult: (typeof window !== 'undefined') ? window.__xjDiag_lastResult : null,
+            mixerDiag: mixerDiag,
+            frameCount: _frameCount,
+            wallNow: (typeof performance !== 'undefined') ? Math.round(performance.now()) : null,
+        });
+    },
+    setViewMode: function(mode) {
+        // 'full' 全身 / 'bust' 胸部以上（与 Python 侧显示模式按钮联动）
+        state.viewMode = (mode === 'bust') ? 'bust' : 'full';
+        fitCamera(state.viewMode);
+    },
+    resetCamera: function() {
+        fitCamera(state.viewMode || 'full');
+    },
+    setCameraPos: function(x, y, z) {
+        // 调试用：直接设置相机位置（侧面视角验证骨骼轴向）
+        camera.position.set(Number(x), Number(y), Number(z));
+        controls.update();
+        return 'cam=' + x + ',' + y + ',' + z;
+    },
+    getCamera: function() {
+        // 调试用：返回当前相机位置/焦点
+        return JSON.stringify({
+            px: +camera.position.x.toFixed(1), py: +camera.position.y.toFixed(1), pz: +camera.position.z.toFixed(1),
+            tx: +controls.target.x.toFixed(1), ty: +controls.target.y.toFixed(1), tz: +controls.target.z.toFixed(1),
+            mode: state.viewMode
+        });
+    },
+    getMorphs: function() {
+        // 调试用：返回 morph 映射键（确认眨眼/嘴型/表情是否匹配到模型）
+        return JSON.stringify(Object.keys(morphMap));
+    },
+    getBones: function() {
+        // 调试用：返回骨骼名列表（含手臂/肩/肘等关键词的）
+        if (!mesh || !mesh.skeleton) return 'no-skeleton';
+        const names = mesh.skeleton.bones.map(function(b){ return b.name; });
+        const kw = names.filter(function(n){ return /arm|Arm|肩|腕|ひじ|肘|hand|Hand|手/.test(n); });
+        return JSON.stringify({total: names.length, arm: kw});
+    },
+    cacheBones: function () { return _cacheBones(); },
+    getBoneAngles: function (keys) {
+        try {
+            var ks = (typeof keys === 'string' && keys) ? keys.split(',') : Object.keys(_B);
+            var out = {};
+            for (var i = 0; i < ks.length; i++) {
+                var k = ks[i].trim(); var b = _B[k];
+                if (b && b.rotation) out[k] = [+b.rotation.x.toFixed(4), +b.rotation.y.toFixed(4), +b.rotation.z.toFixed(4)];
+            }
+            var cen = _B.center;
+            if (cen) out._centerY = +cen.position.y.toFixed(4);
+            return JSON.stringify(out);
+        } catch (e) { return JSON.stringify({ err: String(e) }); }
+    },
+    // 🔴 2026-09-21 定位用：绕过动作系统，直接给某根骨骼设旋转并立刻刷新，再读世界矩阵
+    forceBone: function (key, x, y, z) {
+        try {
+            var b = _B[key];
+            if (!b) { try { b = findBone(key); } catch (e2) { b = null; } }   // 2026-09-21：也支持直接传 MMD 骨骼名（如 左足D）
+            if (!b) return JSON.stringify({ err: 'no-bone:' + key });
+            b.rotation.x = +x; b.rotation.y = +y; b.rotation.z = +z;
+            b.updateMatrixWorld(true);
+            var e = b.matrixWorld.elements;
+            return JSON.stringify({ ok: true, bone: b.name,
+                rot: [+b.rotation.x.toFixed(3), +b.rotation.y.toFixed(3), +b.rotation.z.toFixed(3)],
+                worldPos: [+e[12].toFixed(3), +e[13].toFixed(3), +e[14].toFixed(3)] });
+        } catch (err) { return JSON.stringify({ err: String(err) }); }
+    },
+    getBoneWorld: function (keys) {
+        try {
+            var ks = (typeof keys === 'string' && keys) ? keys.split(',') : Object.keys(_B);
+            var out = {}, i, k, b, e;
+            for (i = 0; i < ks.length; i++) {
+                k = ks[i].trim(); b = _B[k];
+                if (b) { e = b.matrixWorld.elements;
+                    out[k] = { rot: [+b.rotation.x.toFixed(3), +b.rotation.y.toFixed(3), +b.rotation.z.toFixed(3)],
+                               wp: [+e[12].toFixed(2), +e[13].toFixed(2), +e[14].toFixed(2)] }; }
+            }
+            return JSON.stringify(out);
+        } catch (err) { return JSON.stringify({ err: String(err) }); }
+    },
+    ikState: function () {
+        try {
+            return JSON.stringify({
+                helperExists: !!_mmdHelper,
+                enabledKeys: (_mmdHelper && _mmdHelper.enabled) ? _mmdHelper.enabled : null,
+                ikDisabledFlag: _ikDisabled,
+                geoIkCount: (mesh && mesh.geometry && mesh.geometry.userData && mesh.geometry.userData.MMD && mesh.geometry.userData.MMD.iks) ? mesh.geometry.userData.MMD.iks.length : -1
+            });
+        } catch (err) { return JSON.stringify({ err: String(err) }); }
+    },
+    // 🔴 2026-09-21 万能诊断口：在页面模块作用域里 eval 任意 JS（能直接摸到 mesh / 骨骼 / skeleton）。
+    // 用它做决定性实验：直接把腿骨拧 90°，再强制 skeleton.update()，看画面到底跟不跟。
+    debugEval: function (code) {
+        try { var r = eval(code); return JSON.stringify(r === undefined ? 'undefined' : r); }
+        catch (e) { return JSON.stringify({ err: String(e) }); }
+    },
+    getWanderDiag: function () {
+        try {
+            var m = mesh ? mesh.position : null;
+            return JSON.stringify({
+                att: _WANDER.attention, on: _WANDER.on, walking: _WANDER.walking,
+                target: _WANDER.target ? { x: +_WANDER.target.x.toFixed(3), z: +_WANDER.target.z.toFixed(3) } : null,
+                waitUntil: +(_WANDER.waitUntil || 0).toFixed(2),
+                speed: _WANDER.speed,
+                prevT: +(_prevT || 0).toFixed(2), dt: +(_lastDt || 0).toFixed(4),
+                act: _activeBoneAction, playingVmd: _playingVmd,
+                pos: m ? { x: +m.position.x.toFixed(3), y: +m.position.y.toFixed(3), z: +m.position.z.toFixed(3) } : null,
+                yaw: +_modelYaw.toFixed(3), frames: _frameCount
+            });
+        } catch (e) { return JSON.stringify({ err: String(e) }); }
+    },
+    setAttention: function (mode) { return _setAttention(String(mode || 'idle')); },
+    getAttention: function () {
+        return JSON.stringify({ attention: _WANDER.attention, walking: _WANDER.walking,
+            on: _WANDER.on, pos: mesh ? { x: +mesh.position.x.toFixed(3), z: +mesh.position.z.toFixed(3) } : null,
+            yaw: +_modelYaw.toFixed(3), act: _activeBoneAction });
+    },
+    snapBase: function () { _snapBase(); return 'ok'; },
+    diagIK: function () { return _diagIK(); },
+    disableIK: function () { return _disableIK(); },
+    getBoneStatus: function () {
+        var out = {};
+        for (var k in _B) { out[k] = _B[k] ? _B[k].name : null; }
+        return JSON.stringify(out);
+    },
+    getBonesFull: function() {
+        // 调试用：返回全部骨骼名列表（含腿/足/腰/指/眼等），供别名表核对
+        if (!mesh || !mesh.skeleton) return 'no-skeleton';
+        const names = mesh.skeleton.bones.map(function(b){ return b.name; });
+        return JSON.stringify(names);
+    },
+    getArmState: function() {
+        // 调试用：返回手臂骨骼当前 rotation（确认摆臂是否真正驱动）
+        try {
+            if (!state.armBones) return 'no-arm';
+            const out = {};
+            for (const k in state.armBones) {
+                if (k.indexOf('_init') >= 0) continue;   // 跳过初始值记录键
+                const b = state.armBones[k];
+                if (b) out[k] = { x: +b.rotation.x.toFixed(3), y: +b.rotation.y.toFixed(3), z: +b.rotation.z.toFixed(3) };
+            }
+            return JSON.stringify(out);
+        } catch (e) {
+            return 'ERR:' + e.message;
+        }
+    },
+    setArmLock: function(lock) {
+        // 调试用：锁定摆臂动画（验证脚本用，避免动画循环覆盖手动设置）
+        state.armLock = !!lock;
+        return 'armLock=' + state.armLock;
+    },
+    setAnimTime: function(sec) {
+        // 调试用：固定动画时间点（截图验证动作姿态）
+        state.debugTime = (sec === null || sec === undefined) ? null : Number(sec);
+        return 'animTime=' + state.debugTime;
+    },
+    forceArmZ: function(rad) {
+        // 调试用：强制把上臂绕 Z 轴旋转 rad 弧度（验证骨骼是否真正驱动网格）
+        try {
+            const ab = state.armBones;
+            if (!ab || !ab.lUpper) return 'no-arm';
+            const radVal = rad || 0;
+            ab.lUpper.rotation.z = (ab.lUpper_init ? ab.lUpper_init.z : 0) + radVal;
+            ab.rUpper.rotation.z = (ab.rUpper_init ? ab.rUpper_init.z : 0) - radVal;
+            ab.lUpper.updateMatrixWorld(true);
+            ab.rUpper.updateMatrixWorld(true);
+            return 'ok z=' + radVal.toFixed(3);
+        } catch (e) {
+            return 'ERR:' + e.message;
+        }
+    },
+    forceArmAxis: function(axis, val) {
+        // 调试用：绕指定轴旋转上臂（axis: x/y/z），左右镜像
+        try {
+            const ab = state.armBones;
+            if (!ab || !ab.lUpper) return 'no-arm';
+            const v = Number(val) || 0;
+            if (axis === 'x') {
+                ab.lUpper.rotation.x = (ab.lUpper_init ? ab.lUpper_init.x : 0) + v;
+                ab.rUpper.rotation.x = (ab.rUpper_init ? ab.rUpper_init.x : 0) + v;
+            } else if (axis === 'y') {
+                ab.lUpper.rotation.y = (ab.lUpper_init ? ab.lUpper_init.y : 0) + v;
+                ab.rUpper.rotation.y = (ab.rUpper_init ? ab.rUpper_init.y : 0) + v;
+            } else {
+                ab.lUpper.rotation.z = (ab.lUpper_init ? ab.lUpper_init.z : 0) + v;
+                ab.rUpper.rotation.z = (ab.rUpper_init ? ab.rUpper_init.z : 0) - v;
+            }
+            ab.lUpper.updateMatrixWorld(true);
+            ab.rUpper.updateMatrixWorld(true);
+            return 'ok ' + axis + '=' + v.toFixed(3);
+        } catch (e) {
+            return 'ERR:' + e.message;
+        }
+    },
+    getArmWorld: function() {
+        // 调试用：返回手臂骨骼的世界坐标（精确判断旋转方向）
+        try {
+            const ab = state.armBones;
+            if (!ab || !ab.lUpper) return 'no-arm';
+            function wpos(b) {
+                if (!b) return null;
+                const v = new THREE.Vector3();
+                b.getWorldPosition(v);
+                return { x: +v.x.toFixed(2), y: +v.y.toFixed(2), z: +v.z.toFixed(2) };
+            }
+            return JSON.stringify({
+                lUpper: wpos(ab.lUpper), lElbow: wpos(ab.lElbow), lHand: wpos(ab.lHand),
+                rUpper: wpos(ab.rUpper), rElbow: wpos(ab.rElbow), rHand: wpos(ab.rHand),
+            });
+        } catch (e) {
+            return 'ERR:' + e.message;
+        }
+    },
+};
+
+console.log('[Xuanji3D] 就绪，等待Python连接');
+</script>
+</body>
+</html>

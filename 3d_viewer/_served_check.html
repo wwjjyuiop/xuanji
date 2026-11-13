@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>çæº 3D å½¢è±¡</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+#loading {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: rgba(255,255,255,0.4); font-family: 'Microsoft YaHei', sans-serif;
+    font-size: 14px; text-align: center; z-index: 10;
+}
+#loading .spinner {
+    width: 24px; height: 24px; margin: 0 auto 8px;
+    border: 2px solid rgba(255,255,255,0.1);
+    border-top: 2px solid rgba(180,100,255,0.5);
+    border-radius: 50%; animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#name-label {
+    position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+    color: rgba(200,180,255,0.5); font-family: 'Microsoft YaHei', sans-serif;
+    font-size: 11px; letter-spacing: 3px; user-select: none;
+    text-shadow: 0 0 10px rgba(100,80,200,0.3);
+    z-index: 5;
+}
+</style>
+</head>
+<body>
+<div id="loading"><div class="spinner"></div>å è½½å½¢è±¡ä¸­...</div>
+<div id="name-label">ç æº</div>
+
+<script src="./lib/ammo.wasm.js"></script>
+
+<script type="importmap">
+{
+    "imports": {
+        "three": "./lib/three.module.min.js",
+        "three/addons/controls/OrbitControls.js": "./lib/OrbitControls.js",
+        "three/addons/loaders/MMDLoader.js": "./lib/MMDLoader.js",
+        "three/addons/animation/MMDAnimationHelper.js": "./lib/MMDAnimationHelper.js"
+    }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
+import { MMDAnimationHelper } from 'three/addons/animation/MMDAnimationHelper.js';
+
+// âââ ç¶æ âââ
+const state = {
+    speaking: false,
+    emotion: 'calm',
+    blinkTimer: 0,
+    nextBlink: 3 + Math.random() * 2,
+    mouthOpen: 0,
+    mouthTarget: 0,
+    mouthVowel: 0,
+    _nextMouthChange: 0,
+    smileAmount: 0.15,
+    debugTime: null,   // è°è¯ç¨ï¼åºå®å¨ç»æ¶é´ç¹
+};
+
+// âââ åºæ¯ âââ
+const scene = new THREE.Scene();
+scene.background = null; // éææ¸²æè¡¨é¢ï¼alpha:trueï¼ï¼èæ¯éç¨åºæ¯ååç´ ç»å¶
+
+// âââ ç§ææèæ¯ï¼æ·±éå®å®æ¼©æ¶¡ + é»æ´æ ¸å¿ + æè½¬å¸ç§¯ç¯ + ç¯å½¢æå°æµï¼âå¾åç¼©âççºµæ·±æï¼ âââ
+// 1) å¤©ç©ºçï¼ä»¥ç»é¢ä¸­å¿ä¸ºæ¼©æ¶¡æ ¸å¿ï¼ä¸­å¿æ·±é» â è¾¹ç¼å¢¨èéèºæå·æ²ï¼è§è§ä¸âå¾ä¸­å¿ç¼©è¿å»â
+const bgVert = `
+  varying vec2 vUv;
+  void main(){
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+  }`;
+const bgFrag = `
+  varying vec2 vUv;
+  uniform float uT;
+  void main(){
+    // ä»¥å±å¹ä¸­å¿ä¸ºæ¼©æ¶¡æ ¸å¿ç¹(ç¥åä¸ï¼éåå½¢è±¡ç«ä½)
+    vec2 c = vUv - vec2(0.5, 0.42);
+    float r = length(c);
+    float ang = atan(c.y, c.x);
+    // é»æ´æ ¸å¿ï¼ä¸­å¿ææ·±é»ï¼å¾å¤éæ¸æ¾é²åºæè²å®å®åºè²
+    float core = smoothstep(0.0, 0.22, r);
+    // æ¼©æ¶¡èºæå·æ²ï¼è§åº¦å ä¸éåå¾ååçèºæåç§»ï¼äº§çâåéæç¼©â
+    float swirl = ang + r * 9.0 + uT * 0.18;
+    // æè²å®å®åºè²ï¼ä¸­å¿é» â å¤ç¼å¢¨èéï¼å¾åæ¸åï¼
+    vec3 deep = vec3(0.004, 0.006, 0.012);
+    vec3 rim  = vec3(0.015, 0.045, 0.10);
+    vec3 col = mix(deep, rim, smoothstep(0.0, 0.9, r));
+    // èºææçº¹ï¼å´ç»ä¸­å¿æè½¬çå¾®å¾®ææå¸¦ï¼
+    float spiral = 0.5 + 0.5 * sin(swirl * 3.0);
+    col *= (0.92 + 0.14 * spiral * core);
+    // æ¼©æ¶¡æ¹åçææ·¡æäºè²ç¸å¾®å·®ï¼éç´«äº¤ç»ï¼
+    col += vec3(0.012, 0.018, 0.030) * smoothstep(0.1, 0.8, r) * (0.5 + 0.5*sin(swirl*2.0 + 1.7));
+    // åºé¨ææ·¡éè²æåï¼è¡¬æå½¢è±¡èä¸ï¼
+    float y = vUv.y;
+    col += vec3(0.09, 0.06, 0.01) * pow(1.0 - y, 2.5) * 0.5 * smoothstep(0.45, 0.9, r);
+    // åå¨å¾åæè§ï¼èç¦ä¸­å¿é»æ´ï¼
+    col *= (1.0 - 0.45 * smoothstep(0.55, 1.05, r));
+    gl_FragColor = vec4(col, 1.0);
+  }`;
+const skyGeo = new THREE.SphereGeometry(90, 48, 32);
+const skyMat = new THREE.ShaderMaterial({
+    vertexShader: bgVert, fragmentShader: bgFrag,
+    side: THREE.BackSide, depthWrite: false,
+    uniforms: { uT: { value: 0.0 } },
+});
+const sky = new THREE.Mesh(skyGeo, skyMat);
+scene.add(sky);
+
+// 2) å¤§æè²ååç½æ ¼å°é¢ï¼éè§ç§ææï¼éè²å¾®åï¼
+const gridHelper = new THREE.GridHelper(140, 36, 0x00b8d4, 0x005a70);
+gridHelper.material.transparent = true;
+gridHelper.material.opacity = 0.28;
+gridHelper.position.y = -7.5;
+scene.add(gridHelper);
+
+// 3) å¤§åçä¸çè¡æç²å­ï¼å¤§çäº®ç¹ç»çæè½¬ï¼åèªéæºäº®-ç­éªçï¼ä¸ä¸çé»ï¼
+const starCount = 520;
+// çé¢å¾æè§(å¼§åº¦)ï¼æç«å¤§åçï¼ä»å½¢è±¡èè¾¹ååä¸æ¹å»¶ä¼¸æå¼§é¢
+const DISK_TILT = -1.10;   // çº¦-63Â°
+// çå¿ä½ç½®ï¼å¤§åçä¸­å¿å¨å½¢è±¡åæ¹åä¸(åçåæ²¿æµå°å½¢è±¡èè¾¹)ï¼çé¢ååä¸æ¹éºå¼
+const BLACK_HOLE = { x: 0, y: -2.5, z: -11 };  // çå¿(åç§»ï¼è®©å½¢è±¡ç«å¨ç´«è²ç¯è¾¹ç¼)
+const starPos = new Float32Array(starCount * 3);
+const starCol = new Float32Array(starCount * 3);
+const starSz = new Float32Array(starCount);
+const starOrbit = new Float32Array(starCount);  // è½¨éåå¾
+const starAng  = new Float32Array(starCount);
+const starPhase = new Float32Array(starCount);  // æ¯é¢ç²å­çéªçéæºç¸ä½
+const starFreq = new Float32Array(starCount);   // æ¯é¢ç²å­çç¬ç«éæºéªçéåº¦
+for (let i = 0; i < starCount; i++) {
+    // éæºåå¸å¨å¤§åçé¢ä¸ï¼åå¾èå´å¤§ï¼å½¢æå®½éçé¢ï¼
+    const rr = 4 + Math.pow(Math.random(), 0.6) * 30;   // ååå¤ãå¤ç¼ä¹æåå¸
+    const aa = Math.random() * Math.PI * 2;
+    starOrbit[i] = rr;
+    starAng[i]   = aa;
+    starPhase[i] = Math.random() * Math.PI * 2;   // ç¬ç«éªçç¸ä½
+    starFreq[i]  = 0.4 + Math.random() * 1.8;     // ç¬ç«éæºéªçéåº¦(é¢ç²åä¸ç¸å)
+    // çé¢å±é¨åæ 
+    const lx = Math.cos(aa) * rr;
+    const ly = (Math.random() - 0.5) * 1.8;      // çé¢ååº¦
+    const lz = Math.sin(aa) * rr;
+    // ç»Xè½´å¾æ â ç«ä½çé¢
+    const sT = Math.sin(DISK_TILT), cT = Math.cos(DISK_TILT);
+    starPos[i*3]   = BLACK_HOLE.x + lx;
+    starPos[i*3+1] = BLACK_HOLE.y + ly * cT - lz * sT;
+    starPos[i*3+2] = BLACK_HOLE.z + ly * sT + lz * cT;
+    let gold = (Math.random() < 0.30) ? 1 : 0;   // æ´å¤éè²ç¹ç¼
+    starCol[i*3]   = gold ? 1.0 : 0.50;
+    starCol[i*3+1] = gold ? 0.85 : 0.95;
+    starCol[i*3+2] = gold ? 0.35 : 1.0;
+    starSz[i]      = 0.4 + Math.random() * 0.7;   // ç»ç²å­(ä¸åé¢çæ¬ä¸è´)
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+starGeo.setAttribute('color', new THREE.BufferAttribute(starCol, 3));
+starGeo.setAttribute('size', new THREE.BufferAttribute(starSz, 1));
+const starMat = new THREE.PointsMaterial({
+    size: 0.55, vertexColors: true, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
+});
+const stars = new THREE.Points(starGeo, starMat);
+scene.add(stars);
+
+// 4) å¤§å¸ç§¯åçï¼çå¿å¨å½¢è±¡èè¾¹åæ¹ï¼çé¢æ©å¤§å¹¶åå½¢è±¡èº«åä¸æ¹éºå¼ï¼å½¢è±¡ç«å¨ççåæ²¿è¾¹ç¼ï¼
+// 4a) çé¢æ ¸å¿ï¼ä»£æ¿åé»æ´æå¿ï¼ä½ä¸ºççä¸­å¿åååºï¼
+const coreMat = new THREE.MeshBasicMaterial({
+    color: 0x000000, transparent: true, opacity: 0.0,   // æç»å¨ç»éè°
+    side: THREE.DoubleSide,
+});
+const coreCircle = new THREE.Mesh(new THREE.CircleGeometry(4.6, 48), coreMat);
+coreCircle.position.set(BLACK_HOLE.x, BLACK_HOLE.y, BLACK_HOLE.z);
+scene.add(coreCircle);
+// 4b) å¤§å¸ç§¯åçï¼å¾æç«èµ·çå¤å±ååçï¼åå¾æ©å¤§è¦çå½¢è±¡èä¸å¹¶ååä¸æ¹éºå¼ï¼
+function makeAccretion(innerR, outerR, hexColor, opacity, segments) {
+    const ringGeo = new THREE.RingGeometry(innerR, outerR, segments);
+    const ringMat = new THREE.MeshBasicMaterial({
+        color: hexColor, transparent: true, opacity: opacity,
+        side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = DISK_TILT;   // å¾æç«èµ·ï¼çé¢ååä¸æ¹å»¶ä¼¸
+    ring.position.set(BLACK_HOLE.x, BLACK_HOLE.y, BLACK_HOLE.z);
+    scene.add(ring);
+    return ring;
+}
+// å¤§åçï¼éåæ²¿ + èç´«ä¸­ç¯ + èç´«å¤æ ââ è¦çå½¢è±¡èä¸å°èº«åçå®½éçé¢
+const accretionGold = makeAccretion(7.0, 8.5, 0xffc46b, 0.32, 72);    // éè²åæ²¿(æäº®)
+const accretionPurple = makeAccretion(8.4, 15.0, 0x7a5cff, 0.22, 84);  // èç´«ä¸­ç¯(å¤§)
+const accretionBlue = makeAccretion(13.0, 26.0, 0x2f6bff, 0.14, 96);    // èç´«å¤æ(è¶å¤§åç)
+
+// 5) èä¸éè²åç¯ï¼è¡¬æç«ç»ï¼
+const footRing = new THREE.Mesh(
+    new THREE.RingGeometry(5.2, 6.0, 48),
+    new THREE.MeshBasicMaterial({ color: 0xffc107, transparent: true, opacity: 0.55, side: THREE.DoubleSide })
+);
+footRing.rotation.x = -Math.PI / 2;
+footRing.position.y = -7.0;
+scene.add(footRing);
+
+// âââ ç§ææèæ¯ç»æ âââ
+
+// âââ ç¸æº âââ
+const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 1, 200);
+camera.position.set(0, 18, 28);
+
+// âââ æ¸²æå¨ âââ
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+// âââ æ§å¶å¨ï¼è½»äº¤äºï¼ä¸èªè½¬ï¼ âââ
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = false;
+controls.target.set(0, 10, 0);
+controls.minDistance = 2;
+controls.maxDistance = 200;
+controls.maxPolarAngle = Math.PI / 2.1;
+controls.enablePan = false;
+
+// âââ ç¯å âââ
+const ambient = new THREE.AmbientLight(0x404060, 0.4);
+scene.add(ambient);
+
+// ä¸»å
+const keyLight = new THREE.DirectionalLight(0xffeedd, 1.6);
+keyLight.position.set(-10, 18, 12);
+keyLight.castShadow = true;
+scene.add(keyLight);
+
+// è¾åï¼æï¼
+const fillLight = new THREE.DirectionalLight(0xffaa88, 0.5);
+fillLight.position.set(8, 4, -8);
+scene.add(fillLight);
+
+// èåï¼å·è½®å»ï¼
+const rimLight = new THREE.DirectionalLight(0x6688ff, 0.7);
+rimLight.position.set(0, 8, -18);
+scene.add(rimLight);
+
+// åºé¨è¡¥å
+const bottomLight = new THREE.DirectionalLight(0x8866ff, 0.25);
+bottomLight.position.set(0, -10, 0);
+scene.add(bottomLight);
+
+// æ°å´ç¹å
+const pointLight = new THREE.PointLight(0x9966ff, 0.4, 30);
+pointLight.position.set(4, 6, 4);
+scene.add(pointLight);
+
+// âââ å°é¢åæ âââ
+const glowCircle = new THREE.Mesh(
+    new THREE.CircleGeometry(7, 32),
+    new THREE.MeshBasicMaterial({
+        color: 0x6644aa, transparent: true, opacity: 0.06, side: THREE.DoubleSide,
+    })
+);
+glowCircle.rotation.x = -Math.PI / 2;
+glowCircle.position.y = 0.01;
+scene.add(glowCircle);
+
+// âââ è±ç£ç²å­ç³»ç» âââ
+const petalCount = 30;
+const petalGeo = new THREE.BufferGeometry();
+const positions = new Float32Array(petalCount * 3);
+const sizes = new Float32Array(petalCount);
+const velocities = [];
+for (let i = 0; i < petalCount; i++) {
+    positions[i * 3] = (Math.random() - 0.5) * 30;
+    positions[i * 3 + 1] = Math.random() * 40 - 5;
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 20 - 5;
+    sizes[i] = 2 + Math.random() * 4;
+    velocities.push({
+        vy: 0.3 + Math.random() * 0.6,
+        vx: (Math.random() - 0.5) * 0.3,
+        vz: (Math.random() - 0.5) * 0.2,
+    });
+}
+petalGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+petalGeo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+// è±ç£è´´å¾ï¼ç®åæ¤­åï¼
+const petalCanvas = document.createElement('canvas');
+petalCanvas.width = 16;
+petalCanvas.height = 8;
+const ctx = petalCanvas.getContext('2d');
+ctx.fillStyle = 'rgba(255,200,210,0.6)';
+ctx.beginPath();
+ctx.ellipse(8, 4, 7, 3, 0, 0, Math.PI * 2);
+ctx.fill();
+const petalTexture = new THREE.CanvasTexture(petalCanvas);
+
+const petals = new THREE.Points(
+    petalGeo,
+    new THREE.PointsMaterial({
+        color: 0xffc8d4, size: 4, map: petalTexture,
+        transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
+        depthWrite: false, sizeAttenuation: true,
+    })
+);
+scene.add(petals);
+
+// âââ å è½½PMX âââ
+const loader = new MMDLoader();
+let mesh = null;
+const morphMap = {};
+const clock = new THREE.Clock();
+
+// âââ MMD å¨ä½æ­æ¾ï¼æ¹æ¡Aï¼ï¼Ammo ç©ç + AnimationHelper 
+let _mmdHelper = null;
+let _mmdReady = false;
+const _mmdActionLib = {
+    "wave": "actions/wavefile_v2.vmd",
+    "nature": "actions/Ui_Nature_by_å¥¶æ²¹æ¡å­_6e49bb58a128557294a8fe219b935f50.vmd",
+    "resonant": "actions/Ui_Resonant_by_å¥¶æ²¹æ¡å­_722d427885c6e8444b0fff8afd57638e.vmd",
+    "chip": "actions/ç³å¥Ui_Chip_by_å¥¶æ²¹æ¡å­_610ed1c0f11756679cc7bd3556ab0037.vmd",
+    "behit": "actions/ç³å¥ç¬¬ä¸ç»_by_å¥¶æ²¹æ¡å­_c11576ca4911b0e81a11a7afbe011018/AM_Behit_B_L.vmd",
+    "standup": "actions/ç³å¥ç¬¬ä¸ç»_by_å¥¶æ²¹æ¡å­_c11576ca4911b0e81a11a7afbe011018/AM_StandUp.vmd",
+    "standctrl": "actions/ç³å¥ç¬¬ä¸ç»_by_å¥¶æ²¹æ¡å­_c11576ca4911b0e81a11a7afbe011018/AM_Stand_Control.vmd",
+    "summon": "actions/ç³å¥ç¬¬ä¸ç»_by_å¥¶æ²¹æ¡å­_c11576ca4911b0e81a11a7afbe011018/AM_Summon.vmd",
+    "sayso": "actions/say so by Alei/say so motion.vmd",
+    "chenxian": "actions/æ²¦é·_by_ååºé¹¿é¹¿é¹¿_97d54db2a540b6ca2365176fe1902fa6/æ²¦é·1.vmd",
+};
+
+function _buildHelper() {
+    try {
+        _mmdHelper = new MMDAnimationHelper({ audio: false, physics: false });
+        // ð´ IK å³é­ï¼è¿äºå¨ä½å¸¦ IK éª¨éª¼(å¦å·¦è¶³D/å³è¶³D)ï¼æ­æ¾æ¶å¿é¡»ç¦ç¨ helper ç IK æ±è§£å¨ï¼
+        //    å¦å IK ä¼å .vmd å¨ä½å³é®å¸§ææ¶ â è¿é¨/æèæ½æãç©¿æ¨¡ï¼2026-08-29 å¤ªä¹æé"å«å¿å³IK"ï¼
+        if (_mmdHelper.enabled) {
+            _mmdHelper.enabled.ik = false;
+            _mmdHelper.enabled.grant = false;
+            console.log('[MMD] IK/Grant å·²å³é­ï¼å¹éå¨ä½ç´æ¥æ­æ¾ï¼');
+        }
+        return true;
+    } catch (e) { console.error('[MMD] helperåå§åå¤±è´¥:', e); return false; }
+}
+
+function _ammoBtReady() {
+    // Ammo å°±ç»ªçæ å¿: bt ç©çç±»å·²æè½½(ä¸åçæ¬è§¦åæ¶æºä¸å, ç»ä¸ç¨btç±»å­å¨å¤æ­)
+    return typeof Ammo !== 'undefined' &&
+           (typeof Ammo.btVector3 !== 'undefined' ||
+            (Ammo.btDiscreteDynamicsWorld !== undefined));
+}
+
+function _initMMDPhysics(cb) {
+    if (_mmdReady) { if (cb) cb(); return; }
+    var settle = function() {
+        _mmdReady = true;
+        _buildHelper();
+        if (cb) cb();
+    };
+    // æåµ1: Ammo å·²å°±ç»ª(btç±»å·²æè½½) â ç´æ¥å»º helper
+    if (_ammoBtReady()) { settle(); return; }
+    // æåµ2: Ammo å­å¨ä½å¯è½å¼æ­¥åå§å(promise-ready æ onRuntimeInitialized)
+    if (typeof Ammo !== 'undefined') {
+        var waited = false;
+        var attempt = function() {
+            if (_ammoBtReady()) { if (!_mmdReady) settle(); return; }
+            if (!waited) { waited = true; setTimeout(attempt, 300); return; }
+            console.warn('[MMD] Ammoå¼æ­¥åå§åæªå®æ, è·³è¿å¨ä½(æ¨¡åä¸åå½±å)');
+            if (!_mmdReady) { _mmdReady = true; if (cb) cb(); }
+        };
+        // è¥æä¾ onRuntimeInitialized å°±æåè°, åè½®è¯¢ååº
+        if (typeof Ammo.onRuntimeInitialized === 'function') {
+            var orig = Ammo.onRuntimeInitialized;
+            Ammo.onRuntimeInitialized = function() { try { orig && orig(); } catch(e){} attempt(); };
+        }
+        setTimeout(attempt, 200);
+        return;
+    }
+    // æåµ3: Ammo æªå®ä¹ â å¨æå è½½
+    const s = document.createElement('script');
+    s.src = './lib/ammo.wasm.js';
+    s.onload = function() {
+        setTimeout(function() {
+            if (_ammoBtReady()) { settle(); return; }
+            console.warn('[MMD] ammoå è½½åbtæªå°±ç»ª, è·³è¿å¨ä½');
+            if (!_mmdReady) { _mmdReady = true; if (cb) cb(); }
+        }, 500);
+    };
+    s.onerror = function() { console.error('[MMD] ammoå è½½å¤±è´¥(å¨ä½ä¸å¯ç¨,æ¨¡åä¸å½±å)'); if (cb) cb(); };
+    document.head.appendChild(s);
+}
+
+function _mmdAddMesh() {
+    if (!_mmdHelper || !mesh) return;
+    try { _mmdHelper.add(mesh, { physics: false }); } catch (e) { console.error('[MMD] addå¤±è´¥:', e); }
+}
+
+// âââ æ¹æ¡Bï¼ä»£ç é©±å¨éª¨éª¼å¨ä½ï¼ä¸ä¾èµå¤é¨ vmd æä»¶ï¼ âââ
+// å¤åç§°æ¥æ¾ï¼MMD æ¨¡åéª¨éª¼å½åå¯è½ææ¥/ä¸­/è±å ç§ï¼éä¸ªè¯
+const _BONE_ALIASES = {
+    head: ['é ­', 'å¤´', 'head', 'Head', 'é¦'],
+    spine: ['ä¸åèº«', 'ä¸åèº«2', 'spine', 'Spine'],
+    center: ['ã»ã³ã¿ã¼', 'ã»ã³ã¿ã¼', 'center', 'Center'],
+};
+
+function _findBoneWithAlias(candidates) {
+    if (!mesh || !mesh.skeleton) return null;
+    for (const name of candidates) {
+        const b = findBone(name);
+        if (b) return b;
+    }
+    return null;
+}
+
+// éª¨éª¼å¨ä½åºï¼name â é©±å¨å½æ°ãæ¯ä¸ªå½æ°å¨ animation å¾ªç¯éè¢«ä¸æ­è°ç¨(tä¸ºæ¶é´)å å å°éª¨éª¼ä¸
+const _BONE_ACTIONS = {
+    // ç¹å¤´ï¼å¤´é¨ç»Xè½´è½»å¾®å¾å¤
+    nod: function(t) {
+        const b = _findBoneWithAlias(_BONE_ALIASES.head);
+        if (b) { b.rotation.x = Math.sin(t * 2.0) * 0.12; b.updateMatrixWorld(true); }
+    },
+    // æå¤´ï¼å¤´é¨ç»Yè½´è½»å¾®å¾å¤
+    shake: function(t) {
+        const b = _findBoneWithAlias(_BONE_ALIASES.head);
+        if (b) { b.rotation.y = Math.sin(t * 2.5) * 0.18; b.updateMatrixWorld(true); }
+    },
+    // å¾æºå¼å¸ï¼æ´ä½è½»å¾®èµ·ä¼ + å¾®ç¹å¤´
+    idle: function(t) {
+        const b = _findBoneWithAlias(_BONE_ALIASES.head);
+        if (b) { b.rotation.x = Math.sin(t * 0.8) * 0.03; b.updateMatrixWorld(true); }
+    },
+};
+
+// å½åæ­£å¨æ§è¡çéª¨éª¼å¨ä½åï¼null=æ ï¼åªåå¾æº/å®æ ¼ï¼
+let _activeBoneAction = null;
+let _playingVmd = false;   // æ¯å¦æ­£å¨æ­æ¾ .vmd å¤é¨å¨ä½(æ­æ¾æ¶æåä»£ç é©±å¨çå¾æºéª¨éª¼è¦ç)
+
+function _updateBoneAction(t) {
+    const fn = _BONE_ACTIONS[_activeBoneAction];
+    if (fn) fn(t);
+}
+
+// âââ ç»ä¸å¨ä½å¥å£ï¼vmdå¤é¨å¨ä½ æ åç½®éª¨éª¼å¨ä½ âââ
+let _danceTimer = null;
+
+// åæ­¢ææ 3D å¨ä½ï¼åå°å¾æº
+function stopAction() {
+    console.log('[MMD] stopAction åæ­¢ææå¨ä½');
+    if (_danceTimer) { clearTimeout(_danceTimer); _danceTimer = null; }
+    if (mesh && mesh.animationMixer) {
+        try { mesh.animationMixer.stopAllAction(); } catch (e) {}
+    }
+    if (_mmdHelper && mesh) {
+        try { _mmdHelper.remove(mesh); } catch (e) {}
+    }
+    _playingVmd = false;      // æ¢å¤å¾æºéª¨éª¼é©±å¨
+    _activeBoneAction = null; // åæ¶éª¨éª¼å¨ä½
+    return 'stopped';
+}
+
+function playAction(name, vmdPath) {
+    console.log('[MMD] playAction å¥å£: name=' + name + ' mesh=' + (mesh ? 'ok' : 'null'));
+    if (!mesh) { console.warn('[MMD] æ¨¡åæªå°±ç»ª'); return 'no-mesh'; }
+
+    // 0) åæ­¢å½ä»¤ï¼å½»åºåä¸ï¼åå¾æºï¼ç¨æ·è¯´"å/å«å¨äº"ç­ï¼
+    if (name === 'stop' || name === 'idle') {
+        return stopAction();
+    }
+
+    // 1) è·³èï¼éæºæä¸æ¯èï¼æ­å®èªå¨å
+    if (name === 'dance' && !vmdPath) {
+        const dances = ['nature', 'resonant', 'chip', 'chenxian'];
+        const pick = dances[Math.floor(Math.random() * dances.length)];
+        console.log('[MMD] éæºéè: ' + pick);
+        _activeBoneAction = null;
+        stopAction();
+        return playAction(pick);
+    }
+
+    // 2) åç½®éª¨éª¼å¨ä½ï¼æ¹æ¡Bï¼ï¼ä¸ç¨å¤é¨æä»¶
+    if (name in _BONE_ACTIONS && !vmdPath) {
+        stopAction();
+        _activeBoneAction = name;
+        console.log('[MMD] æ­æ¾éª¨éª¼å¨ä½: ' + name);
+        return 'playing-bone:' + name;
+    }
+
+    // 3) å¤é¨ vmd å¨ä½ï¼æ¹æ¡Aï¼
+    const path = vmdPath || _mmdActionLib[name];
+    if (!path) { console.warn('[MMD] æªç¥å¨ä½: ' + name); return 'unknown'; }
+    stopAction();       // ååå½åå¨ä½ï¼é¿åå å /è¿ç¯
+    _activeBoneAction = null;   // åæ¢å vmd æ¶åæéª¨éª¼å¨ä½
+    _playingVmd = true;         // æ è®°æ­£å¨æ­å¤é¨ vmd å¨ä½(æåä»£ç é©±å¨å¾æºéª¨éª¼è¦ç)
+    // èè¹ç±»å¨ä½å¯å¾ªç¯ï¼å¶ä½ç­å¨ä½(æ¥æ/åå»/ç«èµ·/å¬å¤ç­)æ­ä¸éå°±å
+    var isDance = ['nature', 'resonant', 'chip', 'chenxian'].indexOf(name) >= 0;
+    var oneShot = !isDance;   // éèè¹=æ­ä¸æ¬¡å³å
+    _initMMDPhysics(function() {
+        if (!_mmdHelper) { console.warn('[MMD] helperæªå°±ç»ª'); return; }
+        loader.loadAnimation(path, mesh, function(anim) {
+            console.log('[MMD] å¨ä½å è½½æå: ' + name + 'ï¼å¼å§æ­æ¾');
+            try {
+                // ä¸æ¬¡æ§å¨ä½ï¼æ¥æç­ï¼æ­æ¾åï¼åæ¸ç©ºæææ§ actionï¼é¿åæ¥å®ææ¥ä¸æ®ççå¾ªç¯å¨ä½ï¼è·³èï¼
+                if (oneShot) {
+                    if (mesh.animationMixer) {
+                        try { mesh.animationMixer.stopAllAction(); } catch (e) {}
+                        if (mesh.animationMixer._actions) {
+                            try {
+                                mesh.animationMixer._actions.forEach(function(a){ if(a){ a.stop(); a.reset(); } });
+                                mesh.animationMixer._actions.length = 0;
+                            } catch (e) {}
+                        }
+                    }
+                    // è¥ helper å·²æè¿æ§å¨ç»ï¼åç§»é¤åéæ°æï¼é¿åå å 
+                    if (_mmdHelper && mesh) { try { _mmdHelper.remove(mesh); } catch (e) {} }
+                }
+                _mmdHelper.add(mesh, { animation: anim, physics: false });
+                // éèè¹å¨ä½ï¼æåæä¸çè¿ä¸ª mixer action è®¾ä¸ºâæ­ä¸éå³åâ
+                if (oneShot && mesh.animationMixer) {
+                    setTimeout(function() {
+                        var actions = mesh.animationMixer._actions || [];
+                        // åªå¯¹æåæä¸çè¿ä¸ªå¨ä½è®¾ LoopOnceï¼æ¥ææ­å®å¹²ååä½ï¼ä¸å¾ªç¯ä¸æ¥æ®çï¼
+                        var a = actions[actions.length - 1];
+                        if (a) {
+                            try {
+                                a.setLoop(THREE.LoopOnce, 1);   // åªæ­ä¸æ¬¡
+                                a.clampWhenFinished = true;      // æ­å®åå¨æåä¸å¸§
+                                a.reset();
+                                a.play();
+                            } catch (e) {}
+                        }
+                        // å¶ä½æ§å¨ä½ä¸å¾åæï¼é²æ­¢æ®çå¾ªç¯å¨ä½(è·³è)æ¥ç®¡
+                        for (var i = 0; i < actions.length - 1; i++) {
+                            var old = actions[i];
+                            if (old) { try { old.stop(); } catch (e) {} }
+                        }
+                    }, 60);
+                }
+                console.log('[MMD] ' + name + ' å·²å¼å§æ­æ¾ï¼helper.add, oneShot=' + oneShot + 'ï¼');
+            } catch (e) { console.error('[MMD] æ­æ¾å¨ä½å¤±è´¥:', e); }
+        }, null, function(err) { console.error('[MMD] å¨ä½å è½½å¤±è´¥:', err); });
+    });
+    return 'playing-vmd:' + name;
+}
+
+function _mmdUpdate(delta) {
+    if (_mmdHelper && _mmdReady) { try { _mmdHelper.update(delta); } catch (e) {} }
+}
+
+// åæ¢æµmorphåç§°
+const modelPath = 'models/ç³å¥.pmx';
+
+// âââ ç¸æºééï¼ææ¨¡åå®éå°ºå¯¸åæ¯ï¼å¨èº« / è¸é¨ä»¥ä¸ï¼ âââ
+function getModelHeight() {
+    if (!mesh) return 0;
+    const box = new THREE.Box3().setFromObject(mesh);
+    return box.max.y - box.min.y;
+}
+
+// âââ å¾æºæèï¼è®°å½æèéª¨éª¼åå§å§¿æï¼å¨ç»éå å è½»æ âââ
+// ð´ 2026-08-24 ä¿®å¤ï¼ARM_DOWN_Z ä» -1.0 æ¹ä¸º -0.7ï¼
+// å®æµï¼-1.0 æ¶ä¸èå®å¨ç«ç´è´´èº¯å¹²ï¼æx=1.51 å¨èº¯å¹²å®½åº¦åï¼ï¼æ­£é¢è¢«èº¯å¹²æ¡ä½çä¸å°è³èï¼ç¨æ·åé¦"è³èå¨èº«å"ï¼ã
+//       -0.6 æx=3.57 å®å¨å¯è§ï¼-0.8 æx=2.56 èx=1.77 ä¸èé¨åè¢«æ¡ãå -0.7 å¹³è¡¡ï¼èªç¶æå + ä¸èå¯è§ã
+const ARM_DOWN_Z = -0.7;   // ä¸èä¸ååºåï¼Zè½´æè½¬ï¼å·¦è-ãå³è+éåï¼ââ2026-08-24 å®æµ -0.7 å¯è§
+const ELBOW_DOWN_Z = 0.10; // èé¨èªç¶å¾®å¼¯åºå
+
+function findBone(name) {
+    if (!mesh || !mesh.skeleton) return null;
+    for (const b of mesh.skeleton.bones) {
+        if (b.name === name) return b;
+    }
+    return null;
+}
+
+function initArmBones() {
+    state.armBones = {
+        lUpper: findBone('å·¦è'), rUpper: findBone('å³è'),
+        lElbow: findBone('å·¦ã²ã'), rElbow: findBone('å³ã²ã'),
+        lHand: findBone('å·¦æé¦'), rHand: findBone('å³æé¦'),
+    };
+    for (const k in state.armBones) {
+        const b = state.armBones[k];
+        if (b) state.armBones[k + '_init'] = { x: b.rotation.x, y: b.rotation.y, z: b.rotation.z };
+    }
+    console.log('[Xuanji3D] æèéª¨éª¼:', Object.keys(state.armBones).filter(k => state.armBones[k]).join(', '));
+}
+
+function fitCamera(mode) {
+    if (!mesh) return;
+    const box = new THREE.Box3().setFromObject(mesh);
+    const h = box.max.y - box.min.y;
+    const cy = (box.max.y + box.min.y) / 2;
+    const fov = camera.fov * Math.PI / 180;
+    if (mode === 'bust') {
+        // è¸é¨ä»¥ä¸ï¼å¤´é¨å°è¸å£ï¼æ¾å¤§æ¾ç¤º
+        const headY = box.max.y - h * 0.10;   // å¤´é¡¶éè¿
+        const bustH = h * 0.38;               // å¤´âè¸ é«åº¦
+        const dist = (bustH / 2 / Math.tan(fov / 2)) * 1.02;
+        camera.position.set(0, headY, dist);
+        controls.target.set(0, headY, 0);
+    } else {
+        // å¨èº«ï¼å®æ´æ¾ç¤ºï¼ä¸ä¸ç 8% è¾¹è·
+        const dist = (h / 2 / Math.tan(fov / 2)) * 1.08;
+        camera.position.set(0, cy, dist);
+        controls.target.set(0, cy, 0);
+    }
+    controls.update();
+}
+
+loader.load(modelPath, function(result) {
+    mesh = result;
+    mesh.position.set(0, 0, 0);
+    mesh.scale.set(1, 1, 1);
+    
+    mesh.traverse(function(child) {
+        if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+        }
+    });
+    
+    scene.add(mesh);
+    
+    // å»ºç«morphæ å°ï¼å¼å®¹ä¸­/æ¥/è±æåï¼
+    if (mesh.morphTargetDictionary) {
+        for (const name in mesh.morphTargetDictionary) {
+            const idx = mesh.morphTargetDictionary[name];
+            // å£å
+            if (['ã','a','A','ã','i','I','ã','u','U','ã','e','E','ã','o','O'].includes(name)) {
+                morphMap.mouth = morphMap.mouth || [];
+                morphMap.mouth.push({name, idx});
+            }
+            // ç¨ç¼ï¼åªç¨"åç¼é­å"morphï¼blink/ã¾ã°ããï¼ï¼æé¤åç¼ã¦ã£ã³ã¯ç³»å
+            if (['ã¾ã°ãã','blink','Blink','BLINK','mabataki'].includes(name)) {
+                morphMap.blink = morphMap.blink || [];
+                morphMap.blink.push({name, idx});
+            }
+            // å¾®ç¬
+            if (['ç¬ã','å¾®ç¬ã¿','smile','Smile','ããã','ç¬é¡','ã«ã£ãã'].includes(name)) {
+                morphMap.smile = morphMap.smile || [];
+                morphMap.smile.push({name, idx});
+            }
+            // æ²ä¼¤
+            if (['æ²ãã¿','sad','Sad','æ³£ã','cry'].includes(name)) {
+                morphMap.sad = morphMap.sad || [];
+                morphMap.sad.push({name, idx});
+            }
+            // æè®¶
+            if (['é©ã','ãã©ãã','surprise','Surprise','ã','ã¢'].includes(name)) {
+                morphMap.surprise = morphMap.surprise || [];
+                morphMap.surprise.push({name, idx});
+            }
+            // çæ°
+            if (['æã','ããã','angry','Angry','æ'].includes(name)) {
+                morphMap.angry = morphMap.angry || [];
+                morphMap.angry.push({name, idx});
+            }
+            // é»è®¤å­ä¸ä¸ªéç¨æ å°
+            morphMap[name] = idx;
+        }
+        console.log('[Morph] æ å°:', Object.keys(morphMap).join(', '));
+    }
+    
+    document.getElementById('loading').style.display = 'none';
+    
+    // ææ¨¡åå®éå°ºå¯¸ééç¸æºï¼é»è®¤å¨èº«å®æ´æ¾ç¤ºï¼å¤´é¡¶å°èåºé½è¿ç»é¢ï¼
+    state.viewMode = 'full';
+    fitCamera('full');
+    initArmBones();
+    _mmdAddMesh();
+    console.log('[Xuanji3D] æ¨¡åå è½½å®æï¼é«åº¦=' + getModelHeight().toFixed(1) + ' fit=' + state.viewMode);
+    
+}, function(xhr) {
+    const pct = Math.round((xhr.loaded / xhr.total) * 100);
+    document.getElementById('loading').innerHTML = '<div class="spinner"></div>å è½½ä¸­ ' + pct + '%';
+}, function(err) {
+    document.getElementById('loading').innerHTML = '<div style="color:#ff6666;font-size:13px;">å è½½å¤±è´¥: ' + err.message + '</div>';
+    console.error('PMX Load Error:', err);
+});
+
+// âââ è®¾ç½®morphå¼ âââ
+function setMorph(name, value) {
+    if (!mesh || !mesh.morphTargetDictionary) return;
+    if (name in mesh.morphTargetDictionary) {
+        mesh.morphTargetInfluences[mesh.morphTargetDictionary[name]] = value;
+    }
+}
+
+function setMorphList(list, value) {
+    if (!list) return;
+    for (const m of list) {
+        mesh.morphTargetInfluences[m.idx] = value;
+    }
+}
+
+// âââ å¨ç»å¾ªç¯ âââ
+function animate() {
+    requestAnimationFrame(animate);
+    
+    const elapsed = clock.getElapsedTime();
+    const t = (state.debugTime !== null && state.debugTime !== undefined) ? state.debugTime : elapsed;
+    _mmdUpdate(0.016);
+    if (!_playingVmd) { _updateBoneAction(t); }   // æ­æ¾å¤é¨vmdæ¶ä¸é©±å¨ä»£ç éª¨éª¼å¨ä½(é¿åææ¶)
+    
+    if (mesh) {
+        // å¼å¸æµ®å¨ï¼éå°å ä¹ä¸å¯å¯ï¼é¿å"æ´ä¸ªäººä¸ä¸æ"çä½æèå¨ä½ï¼
+        mesh.position.y = Math.sin(t * 1.2) * 0.012;
+        
+        // å¼å¸ç¼©æ¾ï¼å¾®å¾®èµ·ä¼ï¼
+        const breathScale = 1.0 + Math.sin(t * 2.0) * 0.004;
+        mesh.scale.set(breathScale, breathScale, breathScale);
+        
+        // ââ ç¨ç¼ï¼èªç¶èå¥ï¼å¿«éé­âç­ä¿æâç¼æ¢å¼ï¼ ââ
+        state.blinkTimer += 0.016;
+        let blinkVal = 0;
+        if (state.blinkTimer > state.nextBlink) {
+            const phase = state.blinkTimer - state.nextBlink;
+            if (phase < 0.04) {
+                blinkVal = phase / 0.04;               // 0.04s é­ç¼
+            } else if (phase < 0.12) {
+                blinkVal = 1.0;                         // 0.08s ä¿æé­å
+            } else if (phase < 0.24) {
+                blinkVal = 1.0 - (phase - 0.12) / 0.12; // 0.12s ç¼æ¢çå¼
+            } else {
+                state.blinkTimer = 0;
+                state.nextBlink = 2.5 + Math.random() * 3.5;
+            }
+        }
+        setMorphList(morphMap.blink, blinkVal);
+        
+        // ââ å´å·´ï¼è¯´è¯æ¶éæºåé³å£å+å¹³æ»ï¼ä¸è¯´è¯å®å¨é­å´ ââ
+        if (state.speaking) {
+            if (!state._nextMouthChange || t > state._nextMouthChange) {
+                state.mouthVowel = Math.floor(Math.random() * 5);   // éæºåé³ ã/ã/ã/ã/ã
+                state.mouthTarget = 0.3 + Math.random() * 0.5;
+                state._nextMouthChange = t + 0.08 + Math.random() * 0.05;
+            }
+        } else {
+            state.mouthTarget = 0;
+        }
+        state.mouthOpen = state.mouthOpen * 0.6 + state.mouthTarget * 0.4;
+        if (morphMap.mouth && morphMap.mouth.length > 0) {
+            const vowels = ['ã','ã','ã','ã','ã'];
+            let vowelIdx = 0;
+            for (const m of morphMap.mouth) {
+                if (vowels.includes(m.name)) {
+                    mesh.morphTargetInfluences[m.idx] = (vowelIdx === state.mouthVowel) ? state.mouthOpen : 0;
+                    vowelIdx++;
+                } else {
+                    mesh.morphTargetInfluences[m.idx] = 0;
+                }
+            }
+        }
+        
+        // ââ å¾æºå¨ä½ï¼æèåºå®èªç¶ä¸åï¼ARM_DOWN_Z æ ¡æ­£ï¼å·²éªè¯æåï¼ ââ
+        // 2026-08-17 å¤ªä¹æä»¤ï¼å»ææè/äº¤åå¨ç»ï¼è³èæ­£å¸¸ä¸åå³å¯ï¼ä¹åå¨ææå¨æè³èè½¬å°èº«åçä¸å°ï¼
+        const ab = state.armBones;
+        if (ab && !state.armLock && !_playingVmd) {   // æ­å¤é¨vmdæ¶ä¸è¦çæè(é¿åä¸å¨ä½ææ¶)
+            // ä¸èï¼åºå®ä¸ååºåï¼æ æå¨ãæ äº¤åï¼
+            const lUpperZ = ab.lUpper_init.z + ARM_DOWN_Z;
+            const rUpperZ = ab.rUpper_init.z - ARM_DOWN_Z;
+            // èé¨ï¼åºå®èªç¶å¾®å¼¯ï¼æ æå¨ï¼
+            const lElbowZ = ab.lElbow_init.z + ELBOW_DOWN_Z;
+            const rElbowZ = ab.rElbow_init.z - ELBOW_DOWN_Z;
+            if (ab.lUpper) {
+                ab.lUpper.rotation.set(ab.lUpper_init.x, ab.lUpper_init.y, lUpperZ);
+                ab.lUpper.updateMatrixWorld(true);
+            }
+            if (ab.rUpper) {
+                ab.rUpper.rotation.set(ab.rUpper_init.x, ab.rUpper_init.y, rUpperZ);
+                ab.rUpper.updateMatrixWorld(true);
+            }
+            if (ab.lElbow) {
+                ab.lElbow.rotation.set(ab.lElbow_init.x, ab.lElbow_init.y, lElbowZ);
+                ab.lElbow.updateMatrixWorld(true);
+            }
+            if (ab.rElbow) {
+                ab.rElbow.rotation.set(ab.rElbow_init.x, ab.rElbow_init.y, rElbowZ);
+                ab.rElbow.updateMatrixWorld(true);
+            }
+            // æèï¼ä¿æåå§å§¿æï¼ä¸å¨ï¼
+            if (ab.lHand) {
+                ab.lHand.rotation.set(ab.lHand_init.x, ab.lHand_init.y, ab.lHand_init.z);
+                ab.lHand.updateMatrixWorld(true);
+            }
+            if (ab.rHand) {
+                ab.rHand.rotation.set(ab.rHand_init.x, ab.rHand_init.y, ab.rHand_init.z);
+                ab.rHand.updateMatrixWorld(true);
+            }
+        }
+        
+        // ââ è¡¨æ ââ
+        switch (state.emotion) {
+            case 'happy':
+                state.smileAmount += (0.5 - state.smileAmount) * 0.05;
+                if (_activeBoneAction === null) { _activeBoneAction = 'idle'; }
+                break;
+            case 'sad':
+                state.smileAmount += (-0.1 - state.smileAmount) * 0.05;
+                break;
+            case 'surprise':
+                state.smileAmount += (0.1 - state.smileAmount) * 0.05;
+                if (_activeBoneAction === null) { _activeBoneAction = 'nod'; }
+                break;
+            case 'angry':
+                state.smileAmount += (0.02 - state.smileAmount) * 0.05;
+                if (_activeBoneAction === null) { _activeBoneAction = 'shake'; }
+                break;
+            default:
+                state.smileAmount += (0.15 - state.smileAmount) * 0.05;
+        }
+        setMorphList(morphMap.smile, Math.max(0, state.smileAmount));
+        if (state.emotion === 'sad') {
+            setMorphList(morphMap.sad, 0.3 + 0.1 * Math.sin(t * 2));
+        } else {
+            setMorphList(morphMap.sad, 0);
+        }
+        // æ¹æ¡C: æç»ªè¡¨æå å  (surprise/angry morph)
+        if (state.emotion === 'surprise') {
+            setMorphList(morphMap.surprise, 0.35 + 0.1 * Math.sin(t * 3));
+        } else {
+            setMorphList(morphMap.surprise, 0);
+        }
+        if (state.emotion === 'angry') {
+            setMorphList(morphMap.angry, 0.4);
+        } else {
+            setMorphList(morphMap.angry, 0);
+        }
+    }
+    
+    // ââ å°é¢åæå¼å¸ ââ
+    glowCircle.material.opacity = 0.04 + 0.03 * Math.sin(t * 1.2);
+    
+    // ââ ç§æèæ¯èå¨ï¼æ¼©æ¶¡æ¼ç§» + ç¯æå°æµæè½¬å¸å¥ + å¸ç§¯ç¯æè½¬å¼å¸ + èç¯å¼å¸ ââ
+    skyMat.uniforms.uT.value = t;
+    starMat.opacity = 0.55 + 0.3 * Math.sin(t * 0.9);
+
+    // å¤§åçä¸çè¡æç²å­ï¼ç»çæè½¬ + åèªéæºéªç(æ¶å¤±åäº®)ï¼éè½ä¸ä¸çé»
+    const sPos = stars.geometry.attributes.position.array;
+    const sSz  = stars.geometry.attributes.size.array;   // æ¯é¢ç²å­sizeå±æ§
+    const sT = Math.sin(DISK_TILT), cT = Math.cos(DISK_TILT);
+    for (let i = 0; i < starCount; i++) {
+        // ç»çæè½¬ï¼è¿å¿ç¥å¿«ï¼ç¼ç¼ä¸åæ­¥ï¼æå±æ¬¡æï¼
+        const rr  = starOrbit[i];
+        const angSpeed = 1.1 / (rr + 6);
+        starAng[i] += angSpeed * 0.016;
+        const curR = rr;
+        // çé¢å±é¨åæ ï¼åºå®è½¨éï¼ä¸æ¶ç¼©ââå¤§åçä¸éè¦å¸å¥ï¼
+        const lx = Math.cos(starAng[i]) * curR;
+        const ly = Math.sin(t * 0.5 + i) * 0.5;   // çé¢è½»å¾®èµ·ä¼
+        const lz = Math.sin(starAng[i]) * curR;
+        // ç»Xè½´å¾æ â ç«ä½çé¢
+        sPos[i*3]   = BLACK_HOLE.x + lx;
+        sPos[i*3+1] = BLACK_HOLE.y + ly * cT - lz * sT;
+        sPos[i*3+2] = BLACK_HOLE.z + ly * sT + lz * cT;
+        // ç¬ç«éæºéªçï¼æ¯é¢ç²å­ç¨èªå·±éæºçé¢ç/ç¸ä½ï¼(äº®-æ)éæºéè½ï¼ä¸æ¯ç»ä¸å¼å¸
+        const ph = t * starFreq[i] + starPhase[i];
+        const cyc = ph - Math.floor(ph);          // ä¸è§/é¯é½¿å¾ªç¯ 0~1ï¼ç­ä»·fract
+        // æ¯ä¸ªç²å­éæºâäº®ä¸æ®µæ¶é´ / æä¸æ®µæ¶é´âçå¼å³åæ¢ï¼äº®æ®µå æ¯éç²å­èä¸åï¼
+        const duty = 0.25 + (starPhase[i] % 0.55);   // äº®æå æ¯éç²å­ä¸å
+        // smoothstep è½¯åå¼å³æ²¿ï¼ç¨æ­£å¼¦æ¿ä»£ï¼é¿åç¡¬åè¾¹ï¼
+        const edgeLo = 0.5 + 0.5 * Math.sin((cyc - (duty - 0.15)) * 40.0);
+        const edgeHi = 0.5 + 0.5 * Math.cos((cyc - duty) * 40.0);
+        const on = Math.min(1, Math.max(0, edgeLo * (1.0 - edgeHi)));
+        // äº®æ®µè¿æè½»å¾®å¼ºå¼±èµ·ä¼ï¼é¿ååæ¿
+        const fadeIn = 0.55 + 0.45 * Math.sin(cyc * 6.283 + starPhase[i]);
+        const amp = on * (0.5 + 0.5 * fadeIn);
+        sSz[i] = 0.25 + 1.15 * amp;   // ææ¶æå°æ¥è¿æ¶å¤±ï¼äº®æ¶æ¾å¤§ââéæºäº®-ç­-åäº®
+    }
+    stars.geometry.attributes.position.needsUpdate = true;
+    stars.geometry.attributes.size.needsUpdate = true;
+
+    // å¸ç§¯ç¯ï¼æ´ä½æè½¬ + äº®åº¦å¼å¸
+    accretionGold.rotation.z   = t * 0.12;
+    accretionPurple.rotation.z = -t * 0.08;
+    accretionBlue.rotation.z   = t * 0.05;
+    const ringPulse = 0.5 + 0.5 * Math.sin(t * 0.8);
+    accretionGold.material.opacity   = 0.22 + 0.16 * ringPulse;
+    accretionPurple.material.opacity = 0.14 + 0.10 * ringPulse;
+    accretionBlue.material.opacity   = 0.09 + 0.06 * ringPulse;
+    // å¸ç§¯ç¯ç¼æ¢æ´ä½å¤æ©åæ¶å(å¼å¸æ¨æ)
+    accretionGold.scale.setScalar(1.0 + 0.05 * ringPulse);
+    accretionPurple.scale.setScalar(1.0 + 0.05 * ringPulse);
+    accretionBlue.scale.setScalar(1.0 + 0.04 * ringPulse);
+
+    footRing.material.opacity = 0.35 + 0.25 * Math.sin(t * 1.3);
+    footRing.scale.setScalar(1 + 0.04 * Math.sin(t * 2.0));
+    
+    // ââ è±ç£ ââ
+    if (state.speaking && petals.material.opacity < 0.5) {
+        petals.material.opacity += 0.02;
+    } else if (!state.speaking && petals.material.opacity > 0) {
+        petals.material.opacity -= 0.01;
+    }
+    const pos = petals.geometry.attributes.position.array;
+    for (let i = 0; i < petalCount; i++) {
+        pos[i * 3] += velocities[i].vx * 0.2;
+        pos[i * 3 + 1] += velocities[i].vy * 0.2;
+        pos[i * 3 + 2] += velocities[i].vz * 0.2;
+        if (pos[i * 3 + 1] > 35) {
+            pos[i * 3] = (Math.random() - 0.5) * 30;
+            pos[i * 3 + 1] = -5;
+            pos[i * 3 + 2] = (Math.random() - 0.5) * 20 - 5;
+        }
+    }
+    petals.geometry.attributes.position.needsUpdate = true;
+    
+    controls.update();
+    renderer.render(scene, camera);
+}
+animate();
+
+// âââ çªå£èªéåº âââ
+window.addEventListener('resize', function() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// âââââââââââââââââââââââââââââââââââââââââââââââ
+//  Python â JS éä¿¡æ¥å£
+//  ç± QWebEngineView.page().runJavaScript() è°ç¨
+// âââââââââââââââââââââââââââââââââââââââââââââââ
+window.__xuanji3d = {
+    setSpeaking: function(speaking) {
+        state.speaking = speaking;
+    },
+    setEmotion: function(emotion) {
+        state.emotion = emotion;
+    },
+    setMorph: function(name, value) {
+        setMorph(name, value);
+    },
+    playAction: function(name, vmdPath) {
+        return playAction(name, vmdPath);
+    },
+    stopAction: function() {
+        return stopAction();
+    },
+    setViewMode: function(mode) {
+        // 'full' å¨èº« / 'bust' è¸é¨ä»¥ä¸ï¼ä¸ Python ä¾§æ¾ç¤ºæ¨¡å¼æé®èå¨ï¼
+        state.viewMode = (mode === 'bust') ? 'bust' : 'full';
+        fitCamera(state.viewMode);
+    },
+    resetCamera: function() {
+        fitCamera(state.viewMode || 'full');
+    },
+    setCameraPos: function(x, y, z) {
+        // è°è¯ç¨ï¼ç´æ¥è®¾ç½®ç¸æºä½ç½®ï¼ä¾§é¢è§è§éªè¯éª¨éª¼è½´åï¼
+        camera.position.set(Number(x), Number(y), Number(z));
+        controls.update();
+        return 'cam=' + x + ',' + y + ',' + z;
+    },
+    getCamera: function() {
+        // è°è¯ç¨ï¼è¿åå½åç¸æºä½ç½®/ç¦ç¹
+        return JSON.stringify({
+            px: +camera.position.x.toFixed(1), py: +camera.position.y.toFixed(1), pz: +camera.position.z.toFixed(1),
+            tx: +controls.target.x.toFixed(1), ty: +controls.target.y.toFixed(1), tz: +controls.target.z.toFixed(1),
+            mode: state.viewMode
+        });
+    },
+    getMorphs: function() {
+        // è°è¯ç¨ï¼è¿å morph æ å°é®ï¼ç¡®è®¤ç¨ç¼/å´å/è¡¨ææ¯å¦å¹éå°æ¨¡åï¼
+        return JSON.stringify(Object.keys(morphMap));
+    },
+    getBones: function() {
+        // è°è¯ç¨ï¼è¿åéª¨éª¼ååè¡¨ï¼å«æè/è©/èç­å³é®è¯çï¼
+        if (!mesh || !mesh.skeleton) return 'no-skeleton';
+        const names = mesh.skeleton.bones.map(function(b){ return b.name; });
+        const kw = names.filter(function(n){ return /arm|Arm|è©|è|ã²ã|è|hand|Hand|æ/.test(n); });
+        return JSON.stringify({total: names.length, arm: kw});
+    },
+    getArmState: function() {
+        // è°è¯ç¨ï¼è¿åæèéª¨éª¼å½å rotationï¼ç¡®è®¤æèæ¯å¦çæ­£é©±å¨ï¼
+        try {
+            if (!state.armBones) return 'no-arm';
+            const out = {};
+            for (const k in state.armBones) {
+                if (k.indexOf('_init') >= 0) continue;   // è·³è¿åå§å¼è®°å½é®
+                const b = state.armBones[k];
+                if (b) out[k] = { x: +b.rotation.x.toFixed(3), y: +b.rotation.y.toFixed(3), z: +b.rotation.z.toFixed(3) };
+            }
+            return JSON.stringify(out);
+        } catch (e) {
+            return 'ERR:' + e.message;
+        }
+    },
+    setArmLock: function(lock) {
+        // è°è¯ç¨ï¼éå®æèå¨ç»ï¼éªè¯èæ¬ç¨ï¼é¿åå¨ç»å¾ªç¯è¦çæå¨è®¾ç½®ï¼
+        state.armLock = !!lock;
+        return 'armLock=' + state.armLock;
+    },
+    setAnimTime: function(sec) {
+        // è°è¯ç¨ï¼åºå®å¨ç»æ¶é´ç¹ï¼æªå¾éªè¯å¨ä½å§¿æï¼
+        state.debugTime = (sec === null || sec === undefined) ? null : Number(sec);
+        return 'animTime=' + state.debugTime;
+    },
+    forceArmZ: function(rad) {
+        // è°è¯ç¨ï¼å¼ºå¶æä¸èç» Z è½´æè½¬ rad å¼§åº¦ï¼éªè¯éª¨éª¼æ¯å¦çæ­£é©±å¨ç½æ ¼ï¼
+        try {
+            const ab = state.armBones;
+            if (!ab || !ab.lUpper) return 'no-arm';
+            const radVal = rad || 0;
+            ab.lUpper.rotation.z = (ab.lUpper_init ? ab.lUpper_init.z : 0) + radVal;
+            ab.rUpper.rotation.z = (ab.rUpper_init ? ab.rUpper_init.z : 0) - radVal;
+            ab.lUpper.updateMatrixWorld(true);
+            ab.rUpper.updateMatrixWorld(true);
+            return 'ok z=' + radVal.toFixed(3);
+        } catch (e) {
+            return 'ERR:' + e.message;
+        }
+    },
+    forceArmAxis: function(axis, val) {
+        // è°è¯ç¨ï¼ç»æå®è½´æè½¬ä¸èï¼axis: x/y/zï¼ï¼å·¦å³éå
+        try {
+            const ab = state.armBones;
+            if (!ab || !ab.lUpper) return 'no-arm';
+            const v = Number(val) || 0;
+            if (axis === 'x') {
+                ab.lUpper.rotation.x = (ab.lUpper_init ? ab.lUpper_init.x : 0) + v;
+                ab.rUpper.rotation.x = (ab.rUpper_init ? ab.rUpper_init.x : 0) + v;
+            } else if (axis === 'y') {
+                ab.lUpper.rotation.y = (ab.lUpper_init ? ab.lUpper_init.y : 0) + v;
+                ab.rUpper.rotation.y = (ab.rUpper_init ? ab.rUpper_init.y : 0) + v;
+            } else {
+                ab.lUpper.rotation.z = (ab.lUpper_init ? ab.lUpper_init.z : 0) + v;
+                ab.rUpper.rotation.z = (ab.rUpper_init ? ab.rUpper_init.z : 0) - v;
+            }
+            ab.lUpper.updateMatrixWorld(true);
+            ab.rUpper.updateMatrixWorld(true);
+            return 'ok ' + axis + '=' + v.toFixed(3);
+        } catch (e) {
+            return 'ERR:' + e.message;
+        }
+    },
+    getArmWorld: function() {
+        // è°è¯ç¨ï¼è¿åæèéª¨éª¼çä¸çåæ ï¼ç²¾ç¡®å¤æ­æè½¬æ¹åï¼
+        try {
+            const ab = state.armBones;
+            if (!ab || !ab.lUpper) return 'no-arm';
+            function wpos(b) {
+                if (!b) return null;
+                const v = new THREE.Vector3();
+                b.getWorldPosition(v);
+                return { x: +v.x.toFixed(2), y: +v.y.toFixed(2), z: +v.z.toFixed(2) };
+            }
+            return JSON.stringify({
+                lUpper: wpos(ab.lUpper), lElbow: wpos(ab.lElbow), lHand: wpos(ab.lHand),
+                rUpper: wpos(ab.rUpper), rElbow: wpos(ab.rElbow), rHand: wpos(ab.rHand),
+            });
+        } catch (e) {
+            return 'ERR:' + e.message;
+        }
+    },
+};
+
+console.log('[Xuanji3D] å°±ç»ªï¼ç­å¾Pythonè¿æ¥');
+</script>
+</body>
+</html>

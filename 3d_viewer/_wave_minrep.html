@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>wave 最小复现</title>
+<style>body{background:#222;color:#0f0;font:12px monospace;padding:12px}#log{white-space:pre-wrap;height:300px;overflow:auto}</style>
+</head>
+<body>
+<div id="log">初始化...</div>
+<canvas id="c" style="width:400px;height:600px"></canvas>
+<script>
+var logel = document.getElementById('log');
+function L(s){ logel.textContent += s + "\n"; }
+L('加载 ammo.js...');
+</script>
+<!-- 新官方 ammo.js (静态引入, 已验证 bt 类可用) -->
+<script src="lib/ammo.wasm.js"></script>
+<script>
+L('ammo typeof=' + (typeof Ammo) + ' btV3=' + (typeof Ammo!=='undefined'&&typeof Ammo.btVector3!=='undefined'));
+L('开始加载 three/MMD...');
+</script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./lib/three.module.min.js",
+    "three/addons/loaders/MMDLoader.js": "./lib/MMDLoader.js",
+    "three/addons/animation/MMDAnimationHelper.js": "./lib/MMDAnimationHelper.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
+import { MMDAnimationHelper } from 'three/addons/animation/MMDAnimationHelper.js';
+
+var logel = document.getElementById('log');
+function L(s){ logel.textContent += s + "\n"; }
+
+var scene = new THREE.Scene();
+var camera = new THREE.PerspectiveCamera(45, 400/600, 1, 2000);
+camera.position.set(0, 8, 30);
+var renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), alpha: true });
+renderer.setSize(400, 600);
+renderer.setClearColor(0x000000, 0);
+
+var ambient = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambient);
+var dir = new THREE.DirectionalLight(0xffffff, 0.8);
+dir.position.set(5, 10, 5); scene.add(dir);
+
+var loader = new MMDLoader();
+var mesh = null;
+var helper = null;
+var mixer = null;
+
+function tryBuildHelper(){
+  try { helper = new MMDAnimationHelper({ audio:false, physics:false }); L('MMDAnimationHelper 创建成功'); }
+  catch(e){ L('helper失败: ' + e.message); }
+}
+
+function initAmmo(){
+  if (typeof Ammo!=='undefined' && typeof Ammo.btVector3!=='undefined') {
+    L('Ammo已就绪(btV3可用), 建helper'); tryBuildHelper(); return;
+  }
+  if (typeof Ammo!=='undefined' && typeof Ammo.onRuntimeInitialized==='function') {
+    L('Ammo.onRuntimeInitialized 等就绪...');
+    Ammo.onRuntimeInitialized = function(){ L('onRuntimeInitialized 触发'); tryBuildHelper(); };
+  }
+  setTimeout(function(){
+    if (!helper) { L('轮询: btV3=' + (typeof Ammo!=='undefined'&&typeof Ammo.btVector3!=='undefined')); initAmmo(); }
+  }, 500);
+}
+setTimeout(initAmmo, 300);
+
+// 加载模型
+L('加载 model 琳奈.pmx...');
+loader.load('models/琳奈.pmx', function(m){
+  mesh = m;
+  scene.add(mesh);
+  L('模型加载完成 '+mesh.skeleton.bones.length+'骨骼');
+  initAmmo();
+  if (helper) { try{ helper.add(mesh, {physics:false}); L('helper.add mesh ok'); }catch(e){L('add err '+e.message);} }
+  // 触发 wave
+  L('安排 wave 触发(2秒后)');
+  setTimeout(function(){
+    L('>>> 触发 wave 播放');
+    try {
+      loader.loadAnimation('actions/wavefile_v2.vmd', m, function(anim){
+        L('wave 动画加载成功, 开始播放');
+        if (m.animationMixer) { mixer = m.animationMixer; mixer.clipAction(anim).play(); L('mixer.play() 已调用'); }
+        else if (helper) { helper.setAnimation(m, null, null); L('helper.setAnimation 已调用'); }
+        setInterval(function(){ if(mixer) L('mixer.time='+mixer.time.toFixed(2)); }, 1000);
+      }, function(xhr){ if(xhr.loaded&&xhr.total) L('wave加载进度 '+Math.round(xhr.loaded/xhr.total*100)+'%'); }, function(e){ L('wave加载失败: ' + e.message); });
+    } catch(e){ L('wave触发异常: ' + e.message); }
+  }, 1500);
+}, function(xhr){ /* progress */ }, function(e){ L('模型加载失败: ' + e.message); });
+
+// 渲染循环
+function animate(){
+  requestAnimationFrame(animate);
+  if (helper) { try{ helper.update(0.016); }catch(e){} }
+  if (mixer) { try{ mixer.update(0.016); }catch(e){} }
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

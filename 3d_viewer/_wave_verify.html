@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body>
+<div id="log">wait</div>
+<script src="lib/ammo.wasm.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./lib/three.module.min.js",
+    "three/addons/loaders/MMDLoader.js": "./lib/MMDLoader.js",
+    "three/addons/animation/MMDAnimationHelper.js": "./lib/MMDAnimationHelper.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
+import { MMDAnimationHelper } from 'three/addons/animation/MMDAnimationHelper.js';
+var Lel=document.getElementById('log');
+function L(s){ Lel.textContent+=s+"\n"; }
+var scene=new THREE.Scene(), camera=new THREE.PerspectiveCamera(45,400/600,1,2000);
+camera.position.set(0,8,30);
+var renderer=new THREE.WebGLRenderer({canvas:document.createElement('canvas'),alpha:true});
+renderer.setSize(400,600);
+document.body.appendChild(renderer.domElement);
+scene.add(new THREE.AmbientLight(0xffffff,0.7));
+var loader=new MMDLoader(), mesh=null, helper=null, mixer=null;
+function buildHelper(){ try{ helper=new MMDAnimationHelper({audio:false,physics:false}); if(helper.enabled){helper.enabled.ik=false;helper.enabled.grant=false;} L('helper创建成功, IK已关'); }catch(e){L('helper失败 '+e.message);} }
+function initAmmo(){ if(typeof Ammo!=='undefined'&&typeof Ammo.btVector3!=='undefined'){L('Ammo就绪,建helper');buildHelper();return;} setTimeout(initAmmo,300); }
+setTimeout(initAmmo,300);
+L('加载模型...');
+loader.load('models/琳奈.pmx',function(m){
+  mesh=m; scene.add(mesh); L('模型加载完成 '+m.skeleton.bones.length+'骨骼');
+  if(helper){try{helper.add(mesh,{physics:false});L('helper.add ok');}catch(e){L('add err '+e.message);}}
+  // 触发 wave 挥手
+  setTimeout(function(){
+    L('--- 触发 wave 挥手 ---');
+    try{
+      loader.loadAnimation('actions/wavefile_v2.vmd', m, function(anim){
+        L('wave 加载成功, 开始播放!');
+        try{
+          if(m.animationMixer){ mixer=m.animationMixer; mixer.clipAction(anim).play(); L('mixer 播放: '+mixer.time.toFixed(2)); }
+          else if(helper){ helper.add(m, {animation: anim, physics:false}); L('helper.add 播放'); }
+        }catch(e){ L('播放异常 '+e.message); }
+        setInterval(function(){ L('mixer.time='+(mixer?mixer.time.toFixed(2):'n/a')+' (增大=在动)'); },1000);
+      },function(x){if(x.loaded) L('wave加载 '+Math.round(x.loaded/x.total*100)+'%');},
+        function(e){L('wave失败 '+e.message);});
+    }catch(e){L('wave触发异常 '+e.message);}
+  },1500);
+  // 6秒后切 nature 舞蹈
+  setTimeout(function(){
+    L('--- 切换 nature 舞蹈 ---');
+    try{
+      loader.loadAnimation('actions/Ui_Nature_by_奶油桃子_6e49bb58a128557294a8fe219b935f50.vmd', m, function(anim){
+        L('nature 加载成功, 播放!');
+        try{
+          if(m.animationMixer){ mixer=m.animationMixer; mixer.clipAction(anim).play(); L('nature mixer播放'); }
+          else if(helper){ helper.add(m, {animation: anim, physics:false}); L('nature helper.add'); }
+        }catch(e){ L('nature播放异常 '+e.message); }
+      },function(x){if(x.loaded) L('nature加载 '+Math.round(x.loaded/x.total*100)+'%');},
+        function(e){L('nature失败 '+e.message);});
+    }catch(e){L('nature触发异常 '+e.message);}
+  },6500);
+},function(){},function(e){L('模型失败 '+e.message);});
+function animate(){requestAnimationFrame(animate); if(helper&&mixer){try{mixer.update(0.016);}catch(e){}} renderer.render(scene,camera);}
+animate();
+</script>
+</body></html>

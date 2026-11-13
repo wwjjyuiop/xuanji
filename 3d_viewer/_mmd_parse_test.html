@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body><div id="log">wait</div>
+<script>
+var L = document.getElementById('log');
+function s(t){ L.textContent = L.textContent + '\n' + t; }
+s('加载 mmdparser 测试...');
+</script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./lib/three.module.min.js",
+    "three/addons/loaders/MMDLoader.js": "./lib/MMDLoader.js"
+  }
+}
+</script>
+<script type="module">
+import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
+import { MMDParser } from './libs/mmdparser.module.js';
+var L = document.getElementById('log');
+function s(t){ L.textContent = L.textContent + '\n' + t; }
+
+// 用 MMDParser 直接解析 wave.vmd, 绕过 loadAnimation 完整链路
+fetch('actions/wavefile_v2.vmd')
+  .then(r => r.arrayBuffer())
+  .then(buf => {
+    s('fetch到 ' + buf.byteLength + ' 字节, 开始 MMDParser 解析...');
+    try {
+      var parser = new MMDParser.Parser();
+      // 同步解析整个 buffer
+      s('Parser 构造成功, 开始 parseVmd()...');
+      var result = parser.parseVmd(buf, true);
+      s('parseVmd 成功!');
+      s('motions=' + (result.motions ? result.motions.length : '?') );
+      s('cameras=' + (result.cameras ? result.cameras.length : '?'));
+      s('hasBoneMotions=' + (result.motions && result.motions.length>0 ? '是(首个骨骼: '+(result.motions[0].boneName||'?')+')' : '否'));
+    } catch(e){
+      s('MMDParser 解析失败: ' + e.message);
+      s('stack: ' + (e.stack || ''));
+    }
+  })
+  .catch(e => s('fetch失败: ' + e.message));
+setTimeout(function(){ s('=DONE='); }, 8000);
+</script>
+</body></html>

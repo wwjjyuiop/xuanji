@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body><div id="log">wait</div>
+<script>
+var L = document.getElementById('log');
+function s(t){ L.textContent = L.textContent+'\\n'+t; }
+s('fetch wave.vmd 测试...');
+// 直接 fetch wave.vmd 看能否下载+解析
+fetch('actions/wavefile_v2.vmd')
+  .then(function(r){ s('fetch状态='+r.status+' size='+JSON.stringify(r.headers.get('content-length'))); return r.arrayBuffer(); })
+  .then(function(buf){
+    s('拿到字节数='+buf.byteLength);
+    // 检查UTF8文件头
+    var u8 = new Uint8Array(buf, 0, 20);
+    s('文件头='+String.fromCharCode.apply(null, u8));
+  })
+  .catch(function(e){ s('fetch失败: '+e.message); });
+setTimeout(function(){
+  s('=DONE=');
+}, 6000);
+</script>
+</body></html>

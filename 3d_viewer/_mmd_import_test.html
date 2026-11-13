@@ -1,0 +1,18 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./lib/three.module.min.js",
+    "three/addons/animation/MMDAnimationHelper.js": "./lib/MMDAnimationHelper.js"
+  }
+}
+</script></head><body>
+<script type="module">
+import * as THREE from 'three';
+import { MMDAnimationHelper } from 'three/addons/animation/MMDAnimationHelper.js';
+console.log('TEST-1 THREE_OK', !!THREE.WebGLRenderer);
+console.log('TEST-2 HELPER_OK', typeof MMDAnimationHelper);
+document.title = 'MMD_TEST_OK';
+document.body.innerHTML = '<div id="result">OK ' + (typeof MMDAnimationHelper) + '</div>';
+</script>
+</body></html>
